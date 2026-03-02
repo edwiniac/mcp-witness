@@ -267,6 +267,102 @@ async def list_tools() -> list[Tool]:
                 }
             }
         ),
+        # =====================================================================
+        # New: Checkpoint and Anchoring Tools
+        # =====================================================================
+        Tool(
+            name="witness_checkpoints",
+            description="List Merkle checkpoints. Checkpoints group records into "
+                       "Merkle trees for O(log n) verification instead of O(n).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum checkpoints to return",
+                        "default": 20
+                    }
+                }
+            }
+        ),
+        Tool(
+            name="witness_verify_fast",
+            description="Fast chain verification using Merkle checkpoints. "
+                       "Much faster than full verification for large chains.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "from_sequence": {
+                        "type": "integer",
+                        "description": "Start sequence number"
+                    },
+                    "to_sequence": {
+                        "type": "integer",
+                        "description": "End sequence number"
+                    }
+                }
+            }
+        ),
+        Tool(
+            name="witness_anchor",
+            description="Anchor a checkpoint to external trust sources (TSA, Bitcoin, IPFS). "
+                       "Creates cryptographic proof verifiable by third parties.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "checkpoint_id": {
+                        "type": "integer",
+                        "description": "Checkpoint to anchor (default: latest)"
+                    },
+                    "anchor_types": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["tsa", "ots", "ipfs"]
+                        },
+                        "description": "Anchor providers to use (default: all)"
+                    }
+                }
+            }
+        ),
+        Tool(
+            name="witness_verify_anchors",
+            description="Verify external anchors for a checkpoint.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "checkpoint_id": {
+                        "type": "integer",
+                        "description": "Checkpoint to verify anchors for (default: latest)"
+                    }
+                }
+            }
+        ),
+        Tool(
+            name="witness_proof",
+            description="Get complete proof package for a single record. "
+                       "Includes Merkle proof and external anchor receipts - "
+                       "everything needed for third-party verification.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "sequence": {
+                        "type": "integer",
+                        "description": "Record sequence number to get proof for"
+                    }
+                },
+                "required": ["sequence"]
+            }
+        ),
+        Tool(
+            name="witness_backfill",
+            description="Create checkpoints for existing records that don't have them. "
+                       "Run this after upgrading to enable fast verification.",
+            inputSchema={
+                "type": "object",
+                "properties": {}
+            }
+        ),
     ]
 
 
@@ -290,6 +386,19 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await handle_attest(store, arguments)
         elif name == "witness_export":
             result = await handle_export(store, arguments)
+        # New checkpoint and anchoring tools
+        elif name == "witness_checkpoints":
+            result = await handle_checkpoints(store, arguments)
+        elif name == "witness_verify_fast":
+            result = await handle_verify_fast(store, arguments)
+        elif name == "witness_anchor":
+            result = await handle_anchor(store, arguments)
+        elif name == "witness_verify_anchors":
+            result = await handle_verify_anchors(store, arguments)
+        elif name == "witness_proof":
+            result = await handle_proof(store, arguments)
+        elif name == "witness_backfill":
+            result = await handle_backfill(store)
         else:
             result = {"error": f"Unknown tool: {name}"}
         
@@ -430,6 +539,7 @@ async def handle_chain(store: WitnessStorage, args: dict) -> dict:
 async def handle_stats(store: WitnessStorage) -> dict:
     """Handle witness_stats tool call."""
     stats = await store.get_stats()
+    anchor_stats = await store.get_anchor_stats()
     
     return {
         "total_records": stats.total_records,
@@ -442,6 +552,13 @@ async def handle_stats(store: WitnessStorage) -> dict:
         "attested_records": stats.attested_records,
         "chain_valid": stats.chain_valid,
         "chain_status": "✅ Healthy" if stats.chain_valid else "❌ Integrity issues detected",
+        # Checkpoint and anchor stats
+        "checkpoints": {
+            "total": anchor_stats["total_checkpoints"],
+            "anchored": anchor_stats["total_anchors"],
+            "anchor_cost_usd": anchor_stats["total_cost_usd"],
+            "by_anchor_type": anchor_stats["by_type"],
+        },
     }
 
 
@@ -576,6 +693,129 @@ async def handle_export(store: WitnessStorage, args: dict) -> dict:
             }
             for r in records
         ],
+    }
+
+
+# =========================================================================
+# New Handlers: Checkpoints and Anchoring
+# =========================================================================
+
+async def handle_checkpoints(store: WitnessStorage, args: dict) -> dict:
+    """Handle witness_checkpoints tool call."""
+    limit = args.get("limit", 20)
+    checkpoints = await store.list_checkpoints(limit=limit)
+    
+    return {
+        "count": len(checkpoints),
+        "checkpoints": [
+            {
+                "id": cp.id,
+                "from_sequence": cp.from_sequence,
+                "to_sequence": cp.to_sequence,
+                "merkle_root": cp.merkle_root[:16] + "...",
+                "record_count": cp.record_count,
+                "created_at": cp.created_at.isoformat(),
+            }
+            for cp in checkpoints
+        ],
+    }
+
+
+async def handle_verify_fast(store: WitnessStorage, args: dict) -> dict:
+    """Handle witness_verify_fast tool call."""
+    from_seq = args.get("from_sequence")
+    to_seq = args.get("to_sequence")
+    
+    result = await store.verify_chain_fast(from_sequence=from_seq, to_sequence=to_seq)
+    
+    return {
+        "valid": result.valid,
+        "records_checked": result.records_checked,
+        "issues": result.issues,
+        "verified_at": result.verified_at.isoformat(),
+        "status": "✅ Chain integrity verified (fast mode)" if result.valid else "❌ Chain integrity FAILED",
+        "note": "Used Merkle checkpoints for O(log n) verification",
+    }
+
+
+async def handle_anchor(store: WitnessStorage, args: dict) -> dict:
+    """Handle witness_anchor tool call."""
+    from .anchoring import AnchorType
+    
+    checkpoint_id = args.get("checkpoint_id")
+    
+    # Get latest checkpoint if not specified
+    if checkpoint_id is None:
+        checkpoints = await store.list_checkpoints(limit=1)
+        if not checkpoints:
+            return {
+                "error": "No checkpoints exist yet",
+                "hint": "Checkpoints are created every 1000 records",
+            }
+        checkpoint_id = checkpoints[0].id
+    
+    # Parse anchor types
+    anchor_types = None
+    if args.get("anchor_types"):
+        anchor_types = [AnchorType(t) for t in args["anchor_types"]]
+    
+    try:
+        receipts = await store.anchor_checkpoint(
+            checkpoint_id=checkpoint_id,
+            anchor_types=anchor_types,
+        )
+        
+        return {
+            "checkpoint_id": checkpoint_id,
+            "anchors_created": len(receipts),
+            "anchors": [r.to_dict() for r in receipts],
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+async def handle_verify_anchors(store: WitnessStorage, args: dict) -> dict:
+    """Handle witness_verify_anchors tool call."""
+    checkpoint_id = args.get("checkpoint_id")
+    
+    # Get latest checkpoint if not specified
+    if checkpoint_id is None:
+        checkpoints = await store.list_checkpoints(limit=1)
+        if not checkpoints:
+            return {"error": "No checkpoints exist yet"}
+        checkpoint_id = checkpoints[0].id
+    
+    result = await store.verify_anchors(checkpoint_id)
+    
+    all_valid = all(a["valid"] for a in result["anchors"]) if result["anchors"] else True
+    
+    return {
+        **result,
+        "status": "✅ All anchors valid" if all_valid else "⚠️ Some anchors failed verification",
+    }
+
+
+async def handle_proof(store: WitnessStorage, args: dict) -> dict:
+    """Handle witness_proof tool call."""
+    sequence = args.get("sequence")
+    if sequence is None:
+        return {"error": "sequence is required"}
+    
+    proof = await store.get_proof_package(sequence)
+    
+    if proof is None:
+        return {"error": f"Record with sequence {sequence} not found"}
+    
+    return proof
+
+
+async def handle_backfill(store: WitnessStorage) -> dict:
+    """Handle witness_backfill tool call."""
+    checkpoints_created = await store.backfill_checkpoints()
+    
+    return {
+        "checkpoints_created": checkpoints_created,
+        "status": f"✅ Created {checkpoints_created} checkpoints" if checkpoints_created > 0 else "No new checkpoints needed",
     }
 
 

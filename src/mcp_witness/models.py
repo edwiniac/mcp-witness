@@ -122,3 +122,66 @@ class ChainStats(BaseModel):
     records_by_sensitivity: dict[str, int] = Field(default_factory=dict)
     attested_records: int
     chain_valid: bool
+    # Checkpoint stats
+    total_checkpoints: int = 0
+    total_anchors: int = 0
+
+
+class Checkpoint(BaseModel):
+    """A Merkle checkpoint over a range of records."""
+    
+    id: int = Field(description="Checkpoint sequence number")
+    from_sequence: int = Field(description="First record in checkpoint")
+    to_sequence: int = Field(description="Last record in checkpoint")
+    merkle_root: str = Field(description="Merkle root of records")
+    record_count: int
+    last_record_hash: str = Field(description="Links to main chain")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat(),
+        }
+
+
+class Anchor(BaseModel):
+    """An external trust anchor for a checkpoint."""
+    
+    id: Optional[int] = None
+    checkpoint_id: int
+    anchor_type: str
+    merkle_root: str
+    receipt_id: str
+    verification_url: Optional[str] = None
+    raw_receipt: Optional[bytes] = None
+    cost_usd: float = 0.0
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    verified_at: Optional[datetime] = None
+    is_valid: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat(),
+            bytes: lambda v: v.hex() if v else None,
+        }
+
+
+class ProofPackage(BaseModel):
+    """Complete proof package for a single record."""
+    
+    record: dict[str, Any]
+    merkle_proof: dict[str, Any]
+    checkpoint: dict[str, Any]
+    external_anchors: list[dict[str, Any]]
+    verification_instructions: dict[str, str]
+
+
+class AuditExport(BaseModel):
+    """Complete audit export for compliance review."""
+    
+    export_metadata: dict[str, Any]
+    chain_integrity: dict[str, Any]
+    checkpoints: list[dict[str, Any]]
+    external_anchors: list[dict[str, Any]]
+    records: list[dict[str, Any]]

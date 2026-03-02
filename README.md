@@ -14,11 +14,13 @@ Designed for **SOC2**, **HIPAA**, and **GDPR** compliance in regulated industrie
 ## ✨ Features
 
 - **🔗 Hash Chain Integrity** — Every record cryptographically links to the previous one. Tampering is detectable.
+- **🌳 Merkle Checkpoints** — O(log n) verification instead of O(n). Verify millions of records in seconds.
+- **⚓ External Anchoring** — Anchor proofs to RFC 3161 TSA, OpenTimestamps (Bitcoin), and IPFS.
 - **📝 Complete Audit Trail** — Log tool calls, decisions, outputs, and errors with full context.
 - **🔒 PII Redaction** — Store hashes instead of sensitive data while preserving verifiability.
-- **⏰ External Timestamping** — RFC 3161 TSA integration for legal-grade timestamps.
 - **📊 Compliance Reports** — Export audit trails for SOC2/HIPAA auditors.
 - **🔍 Queryable History** — Search by session, actor, tool, time range, sensitivity level.
+- **📜 Proof Packages** — Generate complete verification packages for third-party auditors.
 
 ## 🚀 Quick Start
 
@@ -69,6 +71,8 @@ Once configured, ask Claude:
 
 ## 🛠️ Available Tools
 
+### Core Tools
+
 | Tool | Description |
 |------|-------------|
 | `witness_record` | Log an AI action/decision to the audit trail |
@@ -76,8 +80,18 @@ Once configured, ask Claude:
 | `witness_query` | Search records by session, actor, tool, time |
 | `witness_chain` | Get full decision chain for a session |
 | `witness_stats` | Get audit trail statistics and health |
-| `witness_attest` | Get RFC 3161 timestamp from external authority |
 | `witness_export` | Export records for compliance reporting |
+
+### Checkpoint & Anchoring Tools (v0.2.0+)
+
+| Tool | Description |
+|------|-------------|
+| `witness_checkpoints` | List Merkle checkpoints |
+| `witness_verify_fast` | Fast O(log n) verification using checkpoints |
+| `witness_anchor` | Anchor checkpoint to TSA/Bitcoin/IPFS |
+| `witness_verify_anchors` | Verify external anchor receipts |
+| `witness_proof` | Get complete proof package for a record |
+| `witness_backfill` | Create checkpoints for existing records |
 
 ## 📊 How It Works
 
@@ -97,6 +111,50 @@ Every record includes:
 ```
 
 **Tamper Detection**: If anyone modifies a record, the hash changes, breaking the chain. All subsequent records become invalid.
+
+### Merkle Checkpoints
+
+Every 1000 records, a Merkle tree checkpoint is created:
+
+```
+Records 0-999          Merkle Tree              Checkpoint
+─────────────          ───────────              ──────────
+   rec_0  ────┐              root ──────────▶  checkpoint_0
+   rec_1  ────┤             /    \              merkle_root: abc...
+   rec_2  ────┼───▶    hash_01  hash_23         records: 0-999
+    ...       │         / \      / \
+   rec_999────┘       h0  h1   h2  h3
+```
+
+**Benefits:**
+- **O(log n) verification** — Verify any record in ~10 steps instead of walking entire chain
+- **Proof packages** — Generate portable proofs for third-party verification
+- **Checkpoint anchoring** — Anchor roots to external trust sources
+
+### External Anchoring
+
+Anchor checkpoint Merkle roots to external trust sources:
+
+| Provider | Cost | Latency | Trust Level |
+|----------|------|---------|-------------|
+| **RFC 3161 TSA** | Free | ~1s | Legal-grade |
+| **OpenTimestamps** | Free | ~hours | Bitcoin-backed |
+| **IPFS** | Free | ~2s | Content-addressed |
+
+```
+Your Database              External Anchors
+────────────              ────────────────
+checkpoint_0  ──────────▶  TSA timestamp
+merkle_root: abc...        OpenTimestamps receipt
+                           IPFS CID
+```
+
+**Third-party verification**: Auditors can verify records using only:
+1. The record hash
+2. Merkle proof path
+3. External anchor receipt
+
+No database access required.
 
 ### Data Model
 
@@ -214,9 +272,23 @@ src/mcp_witness/
 ├── __init__.py
 ├── server.py      # MCP server + tool definitions
 ├── models.py      # Pydantic models
-├── storage.py     # SQLite backend with hash chain
-└── hasher.py      # Cryptographic hashing
+├── storage.py     # SQLite backend with hash chain + checkpoints
+├── hasher.py      # Cryptographic hashing
+├── merkle.py      # Merkle tree utilities
+└── anchoring.py   # External trust anchors (TSA, IPFS, OpenTimestamps)
 ```
+
+## ⚙️ Configuration
+
+Environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCP_WITNESS_DB` | `~/.mcp-witness/witness.db` | Database path |
+| `MCP_WITNESS_CHECKPOINT_INTERVAL` | `1000` | Records per checkpoint |
+| `MCP_WITNESS_AUTO_ANCHOR` | `false` | Auto-anchor checkpoints |
+| `PINATA_API_KEY` | - | For IPFS pinning (optional) |
+| `PINATA_API_SECRET` | - | For IPFS pinning (optional) |
 
 ## 🗺️ Roadmap
 
@@ -224,11 +296,14 @@ src/mcp_witness/
 - [x] MCP server with 7 tools
 - [x] PII redaction
 - [x] Query and export
-- [ ] Full RFC 3161 TSA client
+- [x] Merkle tree checkpoints
+- [x] O(log n) fast verification
+- [x] External anchoring (TSA, OpenTimestamps, IPFS)
+- [x] Proof packages for third-party verification
 - [ ] PostgreSQL backend option
 - [ ] PDF report generation
-- [ ] Blockchain anchoring
 - [ ] Web dashboard
+- [ ] Decision graph (non-linear workflows)
 
 ## 📄 License
 

@@ -10,14 +10,22 @@ from uuid import UUID
 import aiosqlite
 
 from .hasher import GENESIS_HASH, compute_record_hash, hash_data, verify_record_hash
+from .merkle import MerkleTree, MerkleProof, build_merkle_tree, get_merkle_proof, verify_merkle_proof
+from .anchoring import AnchorService, AnchorReceipt, AnchorType
 from .models import (
     ActionType,
     ActorType,
+    Anchor,
     ChainStats,
+    Checkpoint,
     Sensitivity,
     VerificationResult,
     WitnessRecord,
 )
+
+# Configuration
+CHECKPOINT_INTERVAL = int(os.getenv("MCP_WITNESS_CHECKPOINT_INTERVAL", "1000"))
+AUTO_ANCHOR = os.getenv("MCP_WITNESS_AUTO_ANCHOR", "false").lower() == "true"
 
 
 class WitnessStorage:
@@ -88,8 +96,49 @@ class WitnessStorage:
             CREATE INDEX IF NOT EXISTS idx_action_type ON witness_records(action_type);
             CREATE INDEX IF NOT EXISTS idx_tool_name ON witness_records(tool_name);
             CREATE INDEX IF NOT EXISTS idx_sensitivity ON witness_records(sensitivity);
+            
+            -- Merkle checkpoints for O(log n) verification
+            CREATE TABLE IF NOT EXISTS witness_checkpoints (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_sequence INTEGER NOT NULL,
+                to_sequence INTEGER NOT NULL,
+                merkle_root TEXT NOT NULL,
+                record_count INTEGER NOT NULL,
+                last_record_hash TEXT NOT NULL,
+                tree_data TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                
+                UNIQUE(from_sequence, to_sequence)
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_checkpoint_range 
+                ON witness_checkpoints(from_sequence, to_sequence);
+            
+            -- External trust anchors
+            CREATE TABLE IF NOT EXISTS witness_anchors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                checkpoint_id INTEGER NOT NULL,
+                anchor_type TEXT NOT NULL,
+                merkle_root TEXT NOT NULL,
+                receipt_id TEXT NOT NULL,
+                verification_url TEXT,
+                raw_receipt BLOB,
+                cost_usd REAL DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                verified_at TEXT,
+                is_valid INTEGER DEFAULT 1,
+                metadata TEXT,
+                
+                FOREIGN KEY (checkpoint_id) REFERENCES witness_checkpoints(id)
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_anchor_checkpoint ON witness_anchors(checkpoint_id);
+            CREATE INDEX IF NOT EXISTS idx_anchor_type ON witness_anchors(anchor_type);
         """)
         await self._db.commit()
+        
+        # Initialize anchor service
+        self._anchor_service = AnchorService()
     
     async def _get_last_record(self) -> Optional[dict]:
         """Get the last record in the chain."""
@@ -219,6 +268,9 @@ class WitnessStorage:
             )
         )
         await self._db.commit()
+        
+        # Check if we should create a checkpoint
+        await self._maybe_create_checkpoint(record.sequence)
         
         return record
     
@@ -470,6 +522,514 @@ class WitnessStorage:
         )
         await self._db.commit()
         return cursor.rowcount
+    
+    # =========================================================================
+    # Checkpoint Methods
+    # =========================================================================
+    
+    async def _maybe_create_checkpoint(self, sequence: int) -> Optional[Checkpoint]:
+        """Create a checkpoint if we've hit the interval."""
+        if (sequence + 1) % CHECKPOINT_INTERVAL != 0:
+            return None
+        
+        from_seq = sequence - CHECKPOINT_INTERVAL + 1
+        to_seq = sequence
+        
+        # Get all records in this range
+        cursor = await self._db.execute(
+            "SELECT record_hash FROM witness_records WHERE sequence >= ? AND sequence <= ? ORDER BY sequence",
+            (from_seq, to_seq)
+        )
+        rows = await cursor.fetchall()
+        record_hashes = [row[0] for row in rows]
+        
+        if len(record_hashes) != CHECKPOINT_INTERVAL:
+            return None  # Something's wrong, skip
+        
+        # Build Merkle tree
+        tree = build_merkle_tree(record_hashes)
+        
+        # Store checkpoint
+        cursor = await self._db.execute(
+            """
+            INSERT INTO witness_checkpoints 
+            (from_sequence, to_sequence, merkle_root, record_count, last_record_hash, tree_data)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                from_seq,
+                to_seq,
+                tree.root,
+                len(record_hashes),
+                record_hashes[-1],
+                json.dumps(tree.to_dict()),
+            )
+        )
+        await self._db.commit()
+        
+        checkpoint_id = cursor.lastrowid
+        
+        checkpoint = Checkpoint(
+            id=checkpoint_id,
+            from_sequence=from_seq,
+            to_sequence=to_seq,
+            merkle_root=tree.root,
+            record_count=len(record_hashes),
+            last_record_hash=record_hashes[-1],
+        )
+        
+        # Auto-anchor if enabled
+        if AUTO_ANCHOR:
+            try:
+                await self.anchor_checkpoint(checkpoint_id)
+            except Exception as e:
+                pass  # Don't fail record creation if anchoring fails
+        
+        return checkpoint
+    
+    async def get_checkpoint(self, checkpoint_id: int) -> Optional[Checkpoint]:
+        """Get a checkpoint by ID."""
+        cursor = await self._db.execute(
+            "SELECT * FROM witness_checkpoints WHERE id = ?",
+            (checkpoint_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        
+        return Checkpoint(
+            id=row["id"],
+            from_sequence=row["from_sequence"],
+            to_sequence=row["to_sequence"],
+            merkle_root=row["merkle_root"],
+            record_count=row["record_count"],
+            last_record_hash=row["last_record_hash"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+    
+    async def get_checkpoint_for_sequence(self, sequence: int) -> Optional[Checkpoint]:
+        """Get the checkpoint containing a given sequence."""
+        cursor = await self._db.execute(
+            "SELECT * FROM witness_checkpoints WHERE from_sequence <= ? AND to_sequence >= ?",
+            (sequence, sequence)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        
+        return Checkpoint(
+            id=row["id"],
+            from_sequence=row["from_sequence"],
+            to_sequence=row["to_sequence"],
+            merkle_root=row["merkle_root"],
+            record_count=row["record_count"],
+            last_record_hash=row["last_record_hash"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+    
+    async def list_checkpoints(self, limit: int = 100) -> list[Checkpoint]:
+        """List all checkpoints."""
+        cursor = await self._db.execute(
+            "SELECT * FROM witness_checkpoints ORDER BY id DESC LIMIT ?",
+            (limit,)
+        )
+        rows = await cursor.fetchall()
+        
+        return [
+            Checkpoint(
+                id=row["id"],
+                from_sequence=row["from_sequence"],
+                to_sequence=row["to_sequence"],
+                merkle_root=row["merkle_root"],
+                record_count=row["record_count"],
+                last_record_hash=row["last_record_hash"],
+                created_at=datetime.fromisoformat(row["created_at"]),
+            )
+            for row in rows
+        ]
+    
+    async def get_merkle_proof(self, sequence: int) -> Optional[dict]:
+        """
+        Get a Merkle proof for a specific record.
+        
+        Returns proof that can verify the record without checking entire chain.
+        """
+        # Find checkpoint containing this record
+        cursor = await self._db.execute(
+            "SELECT * FROM witness_checkpoints WHERE from_sequence <= ? AND to_sequence >= ?",
+            (sequence, sequence)
+        )
+        row = await cursor.fetchone()
+        
+        if not row:
+            return None  # Record not yet checkpointed
+        
+        tree_data = json.loads(row["tree_data"])
+        tree = MerkleTree.from_dict(tree_data)
+        
+        index_in_checkpoint = sequence - row["from_sequence"]
+        proof = get_merkle_proof(tree, index_in_checkpoint)
+        
+        if not proof:
+            return None
+        
+        # Get the record's hash
+        record = await self.get_by_sequence(sequence)
+        if not record:
+            return None
+        
+        return {
+            "record_hash": record.record_hash,
+            "merkle_root": row["merkle_root"],
+            "checkpoint_id": row["id"],
+            "proof_path": proof.proof_path,
+            "leaf_index": proof.leaf_index,
+        }
+    
+    async def verify_single_record(self, sequence: int) -> bool:
+        """Verify a single record using Merkle proof (O(log n))."""
+        proof_data = await self.get_merkle_proof(sequence)
+        
+        if not proof_data:
+            # Fallback to linear verification for uncheckpointed records
+            result = await self.verify_chain(from_sequence=sequence, to_sequence=sequence)
+            return result.valid
+        
+        return verify_merkle_proof(
+            proof_data["record_hash"],
+            proof_data["proof_path"],
+            proof_data["merkle_root"]
+        )
+    
+    async def verify_chain_fast(
+        self,
+        from_sequence: Optional[int] = None,
+        to_sequence: Optional[int] = None,
+    ) -> VerificationResult:
+        """
+        Fast verification using Merkle checkpoints.
+        
+        - Verifies checkpoint Merkle roots (O(1) per checkpoint)
+        - Only walks records between checkpoints (O(n) for remainder)
+        """
+        # Get checkpoints in range
+        conditions = ["1=1"]
+        params = []
+        
+        if from_sequence is not None:
+            conditions.append("to_sequence >= ?")
+            params.append(from_sequence)
+        if to_sequence is not None:
+            conditions.append("from_sequence <= ?")
+            params.append(to_sequence)
+        
+        cursor = await self._db.execute(
+            f"SELECT * FROM witness_checkpoints WHERE {' AND '.join(conditions)} ORDER BY id",
+            params
+        )
+        checkpoints = await cursor.fetchall()
+        
+        if not checkpoints:
+            # No checkpoints, fall back to linear verification
+            return await self.verify_chain(from_sequence, to_sequence)
+        
+        issues = []
+        records_checked = 0
+        
+        # Verify each checkpoint's Merkle root
+        for cp in checkpoints:
+            # Get record hashes for this checkpoint
+            cursor = await self._db.execute(
+                "SELECT record_hash FROM witness_records WHERE sequence >= ? AND sequence <= ? ORDER BY sequence",
+                (cp["from_sequence"], cp["to_sequence"])
+            )
+            hashes = [r[0] for r in await cursor.fetchall()]
+            
+            # Rebuild tree and check root
+            tree = build_merkle_tree(hashes)
+            
+            if tree.root != cp["merkle_root"]:
+                issues.append(
+                    f"Checkpoint {cp['id']} Merkle root mismatch: "
+                    f"tampering detected in records {cp['from_sequence']}-{cp['to_sequence']}"
+                )
+            
+            records_checked += cp["record_count"]
+        
+        # Verify records after last checkpoint (linear walk for remainder)
+        last_checkpointed = checkpoints[-1]["to_sequence"]
+        if to_sequence is None or to_sequence > last_checkpointed:
+            remainder_result = await self.verify_chain(
+                from_sequence=last_checkpointed + 1,
+                to_sequence=to_sequence
+            )
+            issues.extend(remainder_result.issues)
+            records_checked += remainder_result.records_checked
+        
+        return VerificationResult(
+            valid=len(issues) == 0,
+            records_checked=records_checked,
+            issues=issues,
+        )
+    
+    # =========================================================================
+    # Anchoring Methods
+    # =========================================================================
+    
+    async def anchor_checkpoint(
+        self,
+        checkpoint_id: int,
+        anchor_types: list[AnchorType] = None,
+    ) -> list[AnchorReceipt]:
+        """
+        Anchor a checkpoint to external trust sources.
+        
+        Args:
+            checkpoint_id: Which checkpoint to anchor
+            anchor_types: Specific providers to use (default: all)
+        
+        Returns:
+            List of anchor receipts
+        """
+        # Get checkpoint
+        checkpoint = await self.get_checkpoint(checkpoint_id)
+        if not checkpoint:
+            raise ValueError(f"Checkpoint {checkpoint_id} not found")
+        
+        # Anchor
+        receipts = await self._anchor_service.anchor(
+            merkle_root=checkpoint.merkle_root,
+            metadata={
+                "checkpoint_id": checkpoint_id,
+                "from_sequence": checkpoint.from_sequence,
+                "to_sequence": checkpoint.to_sequence,
+                "record_count": checkpoint.record_count,
+            },
+            anchor_types=anchor_types,
+        )
+        
+        # Store receipts
+        for receipt in receipts:
+            await self._db.execute(
+                """
+                INSERT INTO witness_anchors 
+                (checkpoint_id, anchor_type, merkle_root, receipt_id,
+                 verification_url, raw_receipt, cost_usd, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    checkpoint_id,
+                    receipt.anchor_type.value,
+                    receipt.merkle_root,
+                    receipt.receipt_id,
+                    receipt.verification_url,
+                    receipt.raw_receipt,
+                    receipt.cost_usd,
+                    json.dumps(receipt.metadata),
+                )
+            )
+        
+        await self._db.commit()
+        return receipts
+    
+    async def get_anchors_for_checkpoint(self, checkpoint_id: int) -> list[Anchor]:
+        """Get all anchors for a checkpoint."""
+        cursor = await self._db.execute(
+            "SELECT * FROM witness_anchors WHERE checkpoint_id = ?",
+            (checkpoint_id,)
+        )
+        rows = await cursor.fetchall()
+        
+        return [
+            Anchor(
+                id=row["id"],
+                checkpoint_id=row["checkpoint_id"],
+                anchor_type=row["anchor_type"],
+                merkle_root=row["merkle_root"],
+                receipt_id=row["receipt_id"],
+                verification_url=row["verification_url"],
+                raw_receipt=row["raw_receipt"],
+                cost_usd=row["cost_usd"],
+                created_at=datetime.fromisoformat(row["created_at"]),
+                verified_at=datetime.fromisoformat(row["verified_at"]) if row["verified_at"] else None,
+                is_valid=bool(row["is_valid"]),
+                metadata=json.loads(row["metadata"]) if row["metadata"] else {},
+            )
+            for row in rows
+        ]
+    
+    async def verify_anchors(self, checkpoint_id: int) -> dict:
+        """Verify all anchors for a checkpoint."""
+        anchors = await self.get_anchors_for_checkpoint(checkpoint_id)
+        
+        results = []
+        for anchor in anchors:
+            receipt = AnchorReceipt(
+                anchor_type=AnchorType(anchor.anchor_type),
+                merkle_root=anchor.merkle_root,
+                timestamp=anchor.created_at,
+                receipt_id=anchor.receipt_id,
+                verification_url=anchor.verification_url,
+                raw_receipt=anchor.raw_receipt,
+            )
+            
+            is_valid = await self._anchor_service.verify(receipt)
+            
+            # Update verification status
+            await self._db.execute(
+                "UPDATE witness_anchors SET verified_at = ?, is_valid = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), int(is_valid), anchor.id)
+            )
+            
+            results.append({
+                "type": anchor.anchor_type,
+                "receipt_id": anchor.receipt_id,
+                "verification_url": anchor.verification_url,
+                "valid": is_valid,
+            })
+        
+        await self._db.commit()
+        
+        return {
+            "checkpoint_id": checkpoint_id,
+            "anchors": results,
+        }
+    
+    async def get_proof_package(self, sequence: int) -> Optional[dict]:
+        """
+        Get complete proof package for a single record.
+        
+        Returns everything needed to prove a record existed and hasn't been tampered with:
+        - The record itself
+        - Merkle proof to checkpoint root
+        - External anchor receipts
+        """
+        # Get the record
+        record = await self.get_by_sequence(sequence)
+        if not record:
+            return None
+        
+        # Get Merkle proof
+        proof = await self.get_merkle_proof(sequence)
+        if not proof:
+            return {
+                "error": "Record not yet checkpointed",
+                "hint": f"Checkpoints are created every {CHECKPOINT_INTERVAL} records",
+            }
+        
+        # Get checkpoint
+        checkpoint = await self.get_checkpoint(proof["checkpoint_id"])
+        
+        # Get anchors for this checkpoint
+        anchors = await self.get_anchors_for_checkpoint(proof["checkpoint_id"])
+        
+        return {
+            "record": {
+                "id": str(record.id),
+                "sequence": record.sequence,
+                "record_hash": record.record_hash,
+                "timestamp": record.timestamp.isoformat(),
+                "action_type": record.action_type.value,
+                "tool_name": record.tool_name,
+                "actor_id": record.actor_id,
+            },
+            "merkle_proof": {
+                "record_hash": proof["record_hash"],
+                "merkle_root": proof["merkle_root"],
+                "proof_path": proof["proof_path"],
+                "leaf_index": proof["leaf_index"],
+            },
+            "checkpoint": {
+                "id": checkpoint.id,
+                "from_record": checkpoint.from_sequence,
+                "to_record": checkpoint.to_sequence,
+                "created_at": checkpoint.created_at.isoformat(),
+            },
+            "external_anchors": [
+                {
+                    "type": a.anchor_type,
+                    "receipt_id": a.receipt_id,
+                    "verification_url": a.verification_url,
+                    "timestamp": a.created_at.isoformat(),
+                }
+                for a in anchors
+            ],
+            "verification_instructions": {
+                "step_1": "Verify record_hash by hashing record fields",
+                "step_2": "Verify merkle_proof path leads to merkle_root",
+                "step_3": "Verify merkle_root matches external anchors",
+                "step_4": "Verify external anchors via verification_url",
+            }
+        }
+    
+    async def get_anchor_stats(self) -> dict:
+        """Get anchoring statistics."""
+        cursor = await self._db.execute("""
+            SELECT 
+                anchor_type,
+                COUNT(*) as count,
+                COALESCE(SUM(cost_usd), 0) as total_cost,
+                SUM(CASE WHEN is_valid = 1 THEN 1 ELSE 0 END) as valid_count
+            FROM witness_anchors
+            GROUP BY anchor_type
+        """)
+        rows = await cursor.fetchall()
+        
+        by_type = {}
+        total_anchors = 0
+        total_cost = 0.0
+        
+        for row in rows:
+            by_type[row["anchor_type"]] = {
+                "count": row["count"],
+                "cost_usd": row["total_cost"],
+                "valid": row["valid_count"],
+            }
+            total_anchors += row["count"]
+            total_cost += row["total_cost"]
+        
+        # Get checkpoint count
+        cursor = await self._db.execute("SELECT COUNT(*) FROM witness_checkpoints")
+        checkpoint_count = (await cursor.fetchone())[0]
+        
+        return {
+            "total_checkpoints": checkpoint_count,
+            "total_anchors": total_anchors,
+            "total_cost_usd": total_cost,
+            "by_type": by_type,
+        }
+    
+    async def backfill_checkpoints(self) -> int:
+        """Create checkpoints for existing records that don't have them."""
+        # Get max sequence
+        cursor = await self._db.execute("SELECT MAX(sequence) FROM witness_records")
+        max_seq = (await cursor.fetchone())[0]
+        
+        if max_seq is None:
+            return 0
+        
+        # Get last checkpointed sequence
+        cursor = await self._db.execute("SELECT MAX(to_sequence) FROM witness_checkpoints")
+        last_checkpointed = (await cursor.fetchone())[0] or -1
+        
+        checkpoints_created = 0
+        
+        # Create checkpoints for each complete interval
+        for checkpoint_end in range(
+            ((last_checkpointed // CHECKPOINT_INTERVAL) + 1) * CHECKPOINT_INTERVAL + CHECKPOINT_INTERVAL - 1,
+            max_seq + 1,
+            CHECKPOINT_INTERVAL
+        ):
+            if checkpoint_end <= last_checkpointed:
+                continue
+            if checkpoint_end > max_seq:
+                break
+            
+            checkpoint = await self._maybe_create_checkpoint(checkpoint_end)
+            if checkpoint:
+                checkpoints_created += 1
+        
+        return checkpoints_created
     
     def _row_to_record(self, row: aiosqlite.Row) -> WitnessRecord:
         """Convert a database row to a WitnessRecord."""
