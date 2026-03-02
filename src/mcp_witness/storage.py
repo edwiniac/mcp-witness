@@ -379,7 +379,19 @@ class WitnessStorage:
         issues = []
         records_checked = 0
         first_invalid = None
-        prev_hash = GENESIS_HASH
+        
+        # Determine expected prev_hash for the first record in range
+        first_sequence = self._row_to_record(rows[0]).sequence
+        if first_sequence > 0:
+            # Look up the previous record to get the expected prev_hash
+            cursor = await self._db.execute(
+                "SELECT record_hash FROM witness_records WHERE sequence = ?",
+                (first_sequence - 1,)
+            )
+            prev_row = await cursor.fetchone()
+            prev_hash = prev_row[0] if prev_row else GENESIS_HASH
+        else:
+            prev_hash = GENESIS_HASH
         
         for row in rows:
             record = self._row_to_record(row)

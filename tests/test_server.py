@@ -24,8 +24,9 @@ class TestListTools:
     async def test_list_tools_returns_all_tools(self):
         tools = await list_tools()
         
-        assert len(tools) == 7
+        assert len(tools) == 13
         tool_names = [t.name for t in tools]
+        # Original tools
         assert "witness_record" in tool_names
         assert "witness_verify" in tool_names
         assert "witness_query" in tool_names
@@ -33,6 +34,13 @@ class TestListTools:
         assert "witness_stats" in tool_names
         assert "witness_attest" in tool_names
         assert "witness_export" in tool_names
+        # v0.2.0: Merkle checkpoint and anchoring tools
+        assert "witness_checkpoints" in tool_names
+        assert "witness_verify_fast" in tool_names
+        assert "witness_anchor" in tool_names
+        assert "witness_verify_anchors" in tool_names
+        assert "witness_proof" in tool_names
+        assert "witness_backfill" in tool_names
 
     @pytest.mark.asyncio
     async def test_tools_have_schemas(self):
