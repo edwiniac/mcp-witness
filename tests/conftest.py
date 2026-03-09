@@ -1,6 +1,5 @@
 """Shared test fixtures for mcp-witness."""
 
-import os
 import tempfile
 from pathlib import Path
 

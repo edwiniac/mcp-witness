@@ -25,10 +25,10 @@ def _serialize_value(value: Any) -> str:
 def hash_data(data: Any) -> str:
     """
     Compute SHA-256 hash of arbitrary data.
-    
+
     Args:
         data: Any JSON-serializable data
-        
+
     Returns:
         Hex-encoded SHA-256 hash
     """
@@ -48,7 +48,7 @@ def compute_record_hash(
 ) -> str:
     """
     Compute the hash of a witness record.
-    
+
     The hash is computed over key fields that establish the chain:
     - Previous hash (chain link)
     - Sequence number (ordering)
@@ -57,7 +57,7 @@ def compute_record_hash(
     - Actor ID (who)
     - Input/output hashes (what)
     - Tool name (which tool)
-    
+
     Args:
         prev_hash: Hash of the previous record in the chain
         sequence: Monotonic sequence number
@@ -67,7 +67,7 @@ def compute_record_hash(
         input_hash: SHA-256 of input data
         output_hash: SHA-256 of output data
         tool_name: Optional name of the tool called
-        
+
     Returns:
         Hex-encoded SHA-256 hash of the record
     """
@@ -81,7 +81,7 @@ def compute_record_hash(
         output_hash,
         tool_name or "",
     ]
-    
+
     # Join with a delimiter that won't appear in the data
     payload = "|".join(components)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -100,11 +100,11 @@ def verify_record_hash(
 ) -> bool:
     """
     Verify that a record's hash is correct.
-    
+
     Args:
         record_hash: The hash to verify
         ... (same as compute_record_hash)
-        
+
     Returns:
         True if the hash is valid, False otherwise
     """
@@ -124,11 +124,11 @@ def verify_record_hash(
 def verify_chain_link(current_hash: str, next_prev_hash: str) -> bool:
     """
     Verify that two adjacent records are properly linked.
-    
+
     Args:
         current_hash: Hash of the current record
         next_prev_hash: prev_hash field of the next record
-        
+
     Returns:
         True if the chain link is valid
     """
@@ -147,20 +147,20 @@ def is_genesis_record(prev_hash: str) -> bool:
 def redact_field(data: dict, field_path: str) -> dict:
     """
     Redact a field by replacing its value with a hash.
-    
+
     Args:
         data: The data dictionary
         field_path: Dot-separated path to the field (e.g., "user.ssn")
-        
+
     Returns:
         Modified dict with the field redacted
     """
     if not data:
         return data
-    
+
     result = data.copy()
     parts = field_path.split(".")
-    
+
     # Navigate to the parent
     current = result
     for part in parts[:-1]:
@@ -172,13 +172,13 @@ def redact_field(data: dict, field_path: str) -> dict:
                 return result  # Can't navigate further
         else:
             return result  # Path doesn't exist
-    
+
     # Redact the final field
     final_key = parts[-1]
     if isinstance(current, dict) and final_key in current:
         original_value = current[final_key]
         current[final_key] = f"[REDACTED:sha256:{hash_data(original_value)[:16]}]"
-    
+
     return result
 
 

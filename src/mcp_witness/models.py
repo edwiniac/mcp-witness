@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 class ActionType(str, Enum):
     """Types of actions that can be recorded."""
+
     TOOL_CALL = "tool_call"
     DECISION = "decision"
     OUTPUT = "output"
@@ -19,6 +20,7 @@ class ActionType(str, Enum):
 
 class ActorType(str, Enum):
     """Types of actors that can perform actions."""
+
     USER = "user"
     AGENT = "agent"
     SYSTEM = "system"
@@ -26,6 +28,7 @@ class ActorType(str, Enum):
 
 class Sensitivity(str, Enum):
     """Data sensitivity levels for compliance."""
+
     PUBLIC = "public"
     INTERNAL = "internal"
     PII = "pii"  # Personally Identifiable Information
@@ -35,21 +38,21 @@ class Sensitivity(str, Enum):
 
 class WitnessRecord(BaseModel):
     """An immutable audit record in the witness chain."""
-    
+
     # Identity
     id: UUID = Field(default_factory=uuid4)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     sequence: int = Field(ge=0, description="Monotonic sequence number")
-    
+
     # Hash chain
     prev_hash: str = Field(description="SHA-256 hash of previous record")
     record_hash: str = Field(default="", description="SHA-256 hash of this record")
-    
+
     # Who
     actor_type: ActorType = ActorType.AGENT
     actor_id: str = Field(default="unknown", description="Identifier for the actor")
     session_id: str = Field(default="", description="Groups related actions")
-    
+
     # What
     action_type: ActionType
     tool_name: Optional[str] = None
@@ -57,21 +60,21 @@ class WitnessRecord(BaseModel):
     output_data: Optional[dict[str, Any]] = None
     input_hash: str = Field(default="", description="SHA-256 of input for privacy")
     output_hash: str = Field(default="", description="SHA-256 of output for privacy")
-    
+
     # Why
     context: Optional[dict[str, Any]] = None
     reasoning: Optional[str] = None
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    
+
     # Compliance
     sensitivity: Sensitivity = Sensitivity.INTERNAL
     retention_days: int = Field(default=365, ge=1, description="Days to retain record")
     tsa_receipt: Optional[bytes] = None
     anchored_at: Optional[str] = None
-    
+
     # Metadata
     redacted_fields: list[str] = Field(default_factory=list)
-    
+
     class Config:
         json_encoders = {
             datetime: lambda v: v.isoformat(),
@@ -82,6 +85,7 @@ class WitnessRecord(BaseModel):
 
 class VerificationResult(BaseModel):
     """Result of verifying audit trail integrity."""
+
     valid: bool
     records_checked: int
     first_invalid_sequence: Optional[int] = None
@@ -91,6 +95,7 @@ class VerificationResult(BaseModel):
 
 class AttestationResult(BaseModel):
     """Result of external timestamping."""
+
     success: bool
     records_attested: int
     tsa_provider: str
@@ -101,6 +106,7 @@ class AttestationResult(BaseModel):
 
 class ReportResult(BaseModel):
     """Result of generating a compliance report."""
+
     success: bool
     format: str
     report_path: Optional[str] = None
@@ -113,6 +119,7 @@ class ReportResult(BaseModel):
 
 class ChainStats(BaseModel):
     """Statistics about the witness chain."""
+
     total_records: int
     first_record_time: Optional[datetime] = None
     last_record_time: Optional[datetime] = None
@@ -129,7 +136,7 @@ class ChainStats(BaseModel):
 
 class Checkpoint(BaseModel):
     """A Merkle checkpoint over a range of records."""
-    
+
     id: int = Field(description="Checkpoint sequence number")
     from_sequence: int = Field(description="First record in checkpoint")
     to_sequence: int = Field(description="Last record in checkpoint")
@@ -137,7 +144,7 @@ class Checkpoint(BaseModel):
     record_count: int
     last_record_hash: str = Field(description="Links to main chain")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    
+
     class Config:
         json_encoders = {
             datetime: lambda v: v.isoformat(),
@@ -146,7 +153,7 @@ class Checkpoint(BaseModel):
 
 class Anchor(BaseModel):
     """An external trust anchor for a checkpoint."""
-    
+
     id: Optional[int] = None
     checkpoint_id: int
     anchor_type: str
@@ -159,7 +166,7 @@ class Anchor(BaseModel):
     verified_at: Optional[datetime] = None
     is_valid: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
-    
+
     class Config:
         json_encoders = {
             datetime: lambda v: v.isoformat(),
@@ -169,7 +176,7 @@ class Anchor(BaseModel):
 
 class ProofPackage(BaseModel):
     """Complete proof package for a single record."""
-    
+
     record: dict[str, Any]
     merkle_proof: dict[str, Any]
     checkpoint: dict[str, Any]
@@ -179,7 +186,7 @@ class ProofPackage(BaseModel):
 
 class AuditExport(BaseModel):
     """Complete audit export for compliance review."""
-    
+
     export_metadata: dict[str, Any]
     chain_integrity: dict[str, Any]
     checkpoints: list[dict[str, Any]]

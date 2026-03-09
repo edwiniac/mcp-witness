@@ -287,8 +287,13 @@ Environment variables:
 | `MCP_WITNESS_DB` | `~/.mcp-witness/witness.db` | Database path |
 | `MCP_WITNESS_CHECKPOINT_INTERVAL` | `1000` | Records per checkpoint |
 | `MCP_WITNESS_AUTO_ANCHOR` | `false` | Auto-anchor checkpoints |
-| `PINATA_API_KEY` | - | For IPFS pinning (optional) |
-| `PINATA_API_SECRET` | - | For IPFS pinning (optional) |
+| `MCP_WITNESS_MAX_INPUT_BYTES` | `1048576` (1 MB) | Max size of `input_data` / `output_data` per record |
+| `MCP_WITNESS_TSA_TIMEOUT` | `30.0` | HTTP timeout (seconds) for RFC 3161 TSA requests |
+| `MCP_WITNESS_OTS_TIMEOUT` | `30.0` | HTTP timeout (seconds) for OpenTimestamps requests |
+| `MCP_WITNESS_IPFS_TIMEOUT` | `30.0` | HTTP timeout (seconds) for IPFS / Pinata requests |
+| `PINATA_API_KEY` | - | For IPFS pinning via Pinata (optional) |
+| `PINATA_API_SECRET` | - | For IPFS pinning via Pinata (optional) |
+| `TSA_URL` | `https://freetsa.org/tsr` | Custom RFC 3161 Timestamp Authority URL |
 
 ## 🗺️ Roadmap
 

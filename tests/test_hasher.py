@@ -1,6 +1,5 @@
 """Tests for hasher module."""
 
-import pytest
 from datetime import datetime, timezone
 
 from mcp_witness.hasher import (
@@ -85,14 +84,14 @@ class TestComputeRecordHash:
             "input_hash": "abc123",
             "output_hash": "def456",
         }
-        
+
         hash1 = compute_record_hash(**base_args)
-        
+
         # Different sequence
         modified = {**base_args, "sequence": 1}
         hash2 = compute_record_hash(**modified)
         assert hash1 != hash2
-        
+
         # Different actor
         modified = {**base_args, "actor_id": "other_agent"}
         hash3 = compute_record_hash(**modified)

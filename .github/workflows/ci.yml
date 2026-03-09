@@ -40,11 +40,9 @@ jobs:
 
       - name: Lint with ruff
         run: ruff check src/ tests/
-        continue-on-error: true
 
       - name: Check formatting with black
         run: black --check src/ tests/
-        continue-on-error: true
 
       - name: Run tests with coverage
         run: |
@@ -52,7 +50,7 @@ jobs:
             --cov=mcp_witness \
             --cov-report=term-missing \
             --cov-report=xml \
-            --cov-fail-under=60  # TODO: Raise back to 70% after adding tests for anchoring/checkpoints
+            --cov-fail-under=70
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.11'

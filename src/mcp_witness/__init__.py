@@ -2,19 +2,32 @@
 
 __version__ = "0.2.0"
 
+from .anchoring import (
+    AnchorReceipt,
+    AnchorService,
+    AnchorType,
+    IPFSProvider,
+    OpenTimestampsProvider,
+    TSAProvider,
+)
+from .merkle import (
+    MerkleProof,
+    MerkleTree,
+    build_merkle_tree,
+    get_merkle_proof,
+    verify_merkle_proof,
+)
 from .models import (
     ActionType,
     ActorType,
     Anchor,
-    Checkpoint,
     ChainStats,
+    Checkpoint,
     Sensitivity,
     VerificationResult,
     WitnessRecord,
 )
 from .storage import WitnessStorage
-from .merkle import MerkleTree, MerkleProof, build_merkle_tree, get_merkle_proof, verify_merkle_proof
-from .anchoring import AnchorService, AnchorReceipt, AnchorType, TSAProvider, OpenTimestampsProvider, IPFSProvider
 
 __all__ = [
     # Version
