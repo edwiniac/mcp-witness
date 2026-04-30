@@ -7,6 +7,7 @@ from mcp_witness.merkle import (
     verify_merkle_proof,
     verify_tree_integrity,
     hash_pair,
+    hash_leaf,
 )
 
 
@@ -32,7 +33,7 @@ class TestMerkleTree:
         hashes = ["hash1", "hash2"]
         tree = build_merkle_tree(hashes)
         
-        expected_root = hash_pair("hash1", "hash2")
+        expected_root = hash_pair(hash_leaf("hash1"), hash_leaf("hash2"))
         assert tree.root == expected_root
         assert tree.leaf_count == 2
     
@@ -84,7 +85,7 @@ class TestMerkleProof:
         proof = get_merkle_proof(tree, 0)
         
         assert proof is not None
-        assert proof.leaf_hash == "h1"
+        assert proof.leaf_hash == hash_leaf("h1")
         assert proof.leaf_index == 0
         assert proof.root == tree.root
     
@@ -96,7 +97,7 @@ class TestMerkleProof:
         proof = get_merkle_proof(tree, 3)
         
         assert proof is not None
-        assert proof.leaf_hash == "h4"
+        assert proof.leaf_hash == hash_leaf("h4")
         assert proof.leaf_index == 3
     
     def test_proof_verification(self):

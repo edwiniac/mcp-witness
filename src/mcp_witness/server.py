@@ -37,6 +37,47 @@ storage: Optional[WitnessStorage] = None
 
 # Default database path
 DEFAULT_DB_PATH = os.getenv("MCP_WITNESS_DB", "~/.mcp-witness/witness.db")
+MAX_QUERY_LIMIT = int(os.getenv("MCP_WITNESS_MAX_QUERY_LIMIT", "1000"))
+DEBUG_ERRORS = os.getenv("MCP_WITNESS_DEBUG_ERRORS", "false").lower() == "true"
+
+READ_TOOLS = {
+    "witness_verify",
+    "witness_query",
+    "witness_chain",
+    "witness_stats",
+    "witness_checkpoints",
+    "witness_verify_fast",
+    "witness_verify_anchors",
+    "witness_proof",
+}
+WRITE_TOOLS = {
+    "witness_record",
+    "witness_attest",
+    "witness_export",
+    "witness_anchor",
+    "witness_backfill",
+}
+
+
+def _authorize_tool_call(name: str, arguments: dict) -> None:
+    """Authorize tool invocation using optional token-based RBAC."""
+    admin_token = os.getenv("MCP_WITNESS_ADMIN_TOKEN")
+    read_token = os.getenv("MCP_WITNESS_READ_TOKEN")
+    write_token = os.getenv("MCP_WITNESS_WRITE_TOKEN")
+    provided_token = (arguments or {}).get("auth_token")
+
+    # Auth is optional unless at least one token is configured.
+    if not any([admin_token, read_token, write_token]):
+        return
+    if not provided_token:
+        raise PermissionError("authentication required")
+    if admin_token and provided_token == admin_token:
+        return
+    if name in READ_TOOLS and read_token and provided_token == read_token:
+        return
+    if name in WRITE_TOOLS and write_token and provided_token == write_token:
+        return
+    raise PermissionError("not authorized for this tool")
 
 
 async def get_storage() -> WitnessStorage:
@@ -371,6 +412,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     """Handle tool calls."""
     try:
         store = await get_storage()
+        _authorize_tool_call(name, arguments or {})
         
         if name == "witness_record":
             result = await handle_record(store, arguments)
@@ -405,7 +447,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
     
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
+        if DEBUG_ERRORS:
+            message = str(e)
+        else:
+            message = "request failed"
+        return [TextContent(type="text", text=json.dumps({"error": message}, indent=2))]
 
 
 async def handle_record(store: WitnessStorage, args: dict) -> dict:
@@ -472,6 +518,8 @@ async def handle_query(store: WitnessStorage, args: dict) -> dict:
     action_type = ActionType(args["action_type"]) if args.get("action_type") else None
     sensitivity = Sensitivity(args["sensitivity"]) if args.get("sensitivity") else None
     
+    requested_limit = args.get("limit", 100)
+    safe_limit = max(1, min(int(requested_limit), MAX_QUERY_LIMIT))
     records = await store.query(
         session_id=args.get("session_id"),
         actor_id=args.get("actor_id"),
@@ -480,11 +528,12 @@ async def handle_query(store: WitnessStorage, args: dict) -> dict:
         sensitivity=sensitivity,
         from_time=from_time,
         to_time=to_time,
-        limit=args.get("limit", 100),
+        limit=safe_limit,
     )
     
     return {
         "count": len(records),
+        "limit_applied": safe_limit,
         "records": [
             {
                 "id": str(r.id),

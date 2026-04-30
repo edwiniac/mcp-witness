@@ -5,6 +5,7 @@ import json
 from datetime import datetime, timezone
 
 from mcp_witness.server import (
+    call_tool,
     handle_record,
     handle_verify,
     handle_query,
@@ -175,6 +176,25 @@ class TestHandleQuery:
         result = await handle_query(temp_storage, {"limit": 5})
         
         assert result["count"] == 5
+        assert result["limit_applied"] == 5
+
+
+class TestCallToolAuth:
+    """Tests for authz at call_tool boundary."""
+
+    @pytest.mark.asyncio
+    async def test_call_tool_requires_auth_when_configured(self, monkeypatch):
+        monkeypatch.setenv("MCP_WITNESS_READ_TOKEN", "read-secret")
+        response = await call_tool("witness_query", {})
+        payload = json.loads(response[0].text)
+        assert payload["error"] == "request failed"
+
+    @pytest.mark.asyncio
+    async def test_call_tool_accepts_valid_read_token(self, monkeypatch):
+        monkeypatch.setenv("MCP_WITNESS_READ_TOKEN", "read-secret")
+        response = await call_tool("witness_query", {"auth_token": "read-secret"})
+        payload = json.loads(response[0].text)
+        assert "error" not in payload
 
 
 class TestHandleChain:

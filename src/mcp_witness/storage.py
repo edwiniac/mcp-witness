@@ -2,6 +2,7 @@
 
 import json
 import os
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -26,6 +27,8 @@ from .models import (
 # Configuration
 CHECKPOINT_INTERVAL = int(os.getenv("MCP_WITNESS_CHECKPOINT_INTERVAL", "1000"))
 AUTO_ANCHOR = os.getenv("MCP_WITNESS_AUTO_ANCHOR", "false").lower() == "true"
+MAX_TEXT_FIELD_LENGTH = int(os.getenv("MCP_WITNESS_MAX_TEXT_FIELD_LENGTH", "256"))
+MAX_JSON_BYTES = int(os.getenv("MCP_WITNESS_MAX_JSON_BYTES", str(1024 * 1024)))
 
 
 class WitnessStorage:
@@ -178,15 +181,17 @@ class WitnessStorage:
         from uuid import uuid4
         from .hasher import redact_fields as do_redact
         
-        # Get chain state
-        last_record = await self._get_last_record()
-        prev_hash = last_record["record_hash"] if last_record else GENESIS_HASH
-        sequence = (last_record["sequence"] + 1) if last_record else 0
+        if len(actor_id) > MAX_TEXT_FIELD_LENGTH or len(session_id) > MAX_TEXT_FIELD_LENGTH:
+            raise ValueError("actor_id/session_id exceeds configured maximum length")
         
         # Process data
         redacted_fields = redact_fields or []
         processed_input = do_redact(input_data, redacted_fields) if input_data else None
         processed_output = do_redact(output_data, redacted_fields) if output_data else None
+        if input_data and len(json.dumps(input_data).encode("utf-8")) > MAX_JSON_BYTES:
+            raise ValueError("input_data exceeds configured maximum size")
+        if output_data and len(json.dumps(output_data).encode("utf-8")) > MAX_JSON_BYTES:
+            raise ValueError("output_data exceeds configured maximum size")
         
         # Compute hashes
         input_hash = hash_data(input_data) if input_data else ""
@@ -195,24 +200,13 @@ class WitnessStorage:
         timestamp = datetime.now(timezone.utc)
         record_id = uuid4()
         
-        record_hash = compute_record_hash(
-            prev_hash=prev_hash,
-            sequence=sequence,
-            timestamp=timestamp,
-            action_type=action_type.value,
-            actor_id=actor_id,
-            input_hash=input_hash,
-            output_hash=output_hash,
-            tool_name=tool_name,
-        )
-        
         # Create record
         record = WitnessRecord(
             id=record_id,
             timestamp=timestamp,
-            sequence=sequence,
-            prev_hash=prev_hash,
-            record_hash=record_hash,
+            sequence=0,
+            prev_hash=GENESIS_HASH,
+            record_hash="",
             actor_type=actor_type,
             actor_id=actor_id,
             session_id=session_id,
@@ -230,19 +224,36 @@ class WitnessStorage:
             redacted_fields=redacted_fields,
         )
         
-        # Insert into database
-        await self._db.execute(
-            """
-            INSERT INTO witness_records (
-                id, timestamp, sequence, prev_hash, record_hash,
-                actor_type, actor_id, session_id,
-                action_type, tool_name, input_data, output_data, input_hash, output_hash,
-                context, reasoning, confidence,
-                sensitivity, retention_days, tsa_receipt, anchored_at,
-                redacted_fields
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
+        for attempt in range(5):
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                last_record = await self._get_last_record()
+                prev_hash = last_record["record_hash"] if last_record else GENESIS_HASH
+                sequence = (last_record["sequence"] + 1) if last_record else 0
+                record.sequence = sequence
+                record.prev_hash = prev_hash
+                record.record_hash = compute_record_hash(
+                    prev_hash=prev_hash,
+                    sequence=sequence,
+                    timestamp=timestamp,
+                    action_type=action_type.value,
+                    actor_id=actor_id,
+                    input_hash=input_hash,
+                    output_hash=output_hash,
+                    tool_name=tool_name,
+                )
+                await self._db.execute(
+                    """
+                    INSERT INTO witness_records (
+                        id, timestamp, sequence, prev_hash, record_hash,
+                        actor_type, actor_id, session_id,
+                        action_type, tool_name, input_data, output_data, input_hash, output_hash,
+                        context, reasoning, confidence,
+                        sensitivity, retention_days, tsa_receipt, anchored_at,
+                        redacted_fields
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
                 str(record.id),
                 record.timestamp.isoformat(),
                 record.sequence,
@@ -265,9 +276,17 @@ class WitnessStorage:
                 record.tsa_receipt,
                 record.anchored_at,
                 json.dumps(record.redacted_fields),
-            )
-        )
-        await self._db.commit()
+                    )
+                )
+                await self._db.commit()
+                break
+            except aiosqlite.OperationalError as exc:
+                await self._db.rollback()
+                if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                    raise
+                if attempt == 4:
+                    raise
+                await asyncio.sleep(0.05 * (attempt + 1))
         
         # Check if we should create a checkpoint
         await self._maybe_create_checkpoint(record.sequence)

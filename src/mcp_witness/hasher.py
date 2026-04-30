@@ -1,6 +1,7 @@
 """Cryptographic hashing and chain integrity for mcp-witness."""
 
 import hashlib
+import hmac
 import json
 from datetime import datetime
 from typing import Any, Optional
@@ -118,7 +119,7 @@ def verify_record_hash(
         output_hash=output_hash,
         tool_name=tool_name,
     )
-    return record_hash == expected
+    return hmac.compare_digest(record_hash, expected)
 
 
 def verify_chain_link(current_hash: str, next_prev_hash: str) -> bool:
@@ -132,11 +133,11 @@ def verify_chain_link(current_hash: str, next_prev_hash: str) -> bool:
     Returns:
         True if the chain link is valid
     """
-    return current_hash == next_prev_hash
+    return hmac.compare_digest(current_hash, next_prev_hash)
 
 
 # Genesis hash for the first record in a chain
-GENESIS_HASH = "0" * 64  # 64 zeros (256 bits)
+GENESIS_HASH = hashlib.sha256(b"").hexdigest()
 
 
 def is_genesis_record(prev_hash: str) -> bool:

@@ -4,10 +4,18 @@ import hashlib
 from dataclasses import dataclass
 from typing import Optional
 
+LEAF_PREFIX = b"\x00"
+NODE_PREFIX = b"\x01"
+
+
+def hash_leaf(leaf_hash: str) -> str:
+    """Domain-separated hash for a leaf value."""
+    return hashlib.sha256(LEAF_PREFIX + leaf_hash.encode()).hexdigest()
+
 
 def hash_pair(left: str, right: str) -> str:
-    """Hash two nodes together."""
-    combined = f"{left}{right}".encode()
+    """Hash two internal nodes together with domain separation."""
+    combined = NODE_PREFIX + left.encode() + right.encode()
     return hashlib.sha256(combined).hexdigest()
 
 
@@ -75,7 +83,8 @@ def build_merkle_tree(record_hashes: list[str]) -> MerkleTree:
         next_pow2 *= 2
     
     # Duplicate last hash to pad (standard Merkle tree behavior)
-    leaves = record_hashes + [record_hashes[-1]] * (next_pow2 - n)
+    leaf_hashes = [hash_leaf(record_hash) for record_hash in record_hashes]
+    leaves = leaf_hashes + [leaf_hashes[-1]] * (next_pow2 - n)
     
     levels = [leaves]
     current = leaves
