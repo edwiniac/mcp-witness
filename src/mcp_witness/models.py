@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any, Optional
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ActionType(str, Enum):
@@ -72,12 +72,13 @@ class WitnessRecord(BaseModel):
     # Metadata
     redacted_fields: list[str] = Field(default_factory=list)
     
-    class Config:
-        json_encoders = {
+    model_config = ConfigDict(
+        json_encoders={
             datetime: lambda v: v.isoformat(),
             UUID: lambda v: str(v),
             bytes: lambda v: v.hex() if v else None,
         }
+    )
 
 
 class VerificationResult(BaseModel):
@@ -138,10 +139,11 @@ class Checkpoint(BaseModel):
     last_record_hash: str = Field(description="Links to main chain")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
-    class Config:
-        json_encoders = {
+    model_config = ConfigDict(
+        json_encoders={
             datetime: lambda v: v.isoformat(),
         }
+    )
 
 
 class Anchor(BaseModel):
@@ -160,11 +162,12 @@ class Anchor(BaseModel):
     is_valid: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
     
-    class Config:
-        json_encoders = {
+    model_config = ConfigDict(
+        json_encoders={
             datetime: lambda v: v.isoformat(),
             bytes: lambda v: v.hex() if v else None,
         }
+    )
 
 
 class ProofPackage(BaseModel):

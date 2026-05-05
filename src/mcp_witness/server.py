@@ -653,7 +653,11 @@ async def handle_export(store: WitnessStorage, args: dict) -> dict:
             },
             "unique_sessions": len(set(r.session_id for r in records)),
             "unique_actors": len(set(r.actor_id for r in records)),
-            "actions_by_type": {},
+            "actions_by_type": {
+                at.value: sum(1 for r in records if r.action_type == at)
+                for at in ActionType
+                if any(r.action_type == at for r in records)
+            },
             "chain_verification": {
                 "valid": verification.valid if verification else None,
                 "records_checked": verification.records_checked if verification else None,

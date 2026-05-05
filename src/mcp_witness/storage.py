@@ -46,6 +46,8 @@ class WitnessStorage:
         """Connect to the database and ensure schema exists."""
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
+        await self._db.execute("PRAGMA journal_mode=WAL")
+        await self._db.execute("PRAGMA busy_timeout=5000")
         await self._create_schema()
     
     async def close(self) -> None:

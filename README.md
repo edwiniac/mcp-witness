@@ -13,9 +13,9 @@ Designed for **SOC2**, **HIPAA**, and **GDPR** compliance in regulated industrie
 
 ## ✨ Features
 
-- **🔗 Hash Chain Integrity** — Every record cryptographically links to the previous one. Tampering is detectable.
+- **🔗 Hash Chain Integrity** — Every record cryptographically links to the previous one. Tampering is detectable and tested.
 - **🌳 Merkle Checkpoints** — O(log n) verification instead of O(n). Verify millions of records in seconds.
-- **⚓ External Anchoring** — Anchor proofs to RFC 3161 TSA, OpenTimestamps (Bitcoin), and IPFS.
+- **⚓ External Anchoring** — Anchor proofs to RFC 3161 TSA (proper DER-encoded TimeStampReq), OpenTimestamps (Bitcoin), and IPFS (spec-compliant CIDv0/CIDv1 multihash).
 - **📝 Complete Audit Trail** — Log tool calls, decisions, outputs, and errors with full context.
 - **🔒 PII Redaction** — Store hashes instead of sensitive data while preserving verifiability.
 - **📊 Compliance Reports** — Export audit trails for SOC2/HIPAA auditors.
@@ -269,13 +269,22 @@ pytest --cov=mcp_witness --cov-report=term-missing
 
 ```
 src/mcp_witness/
-├── __init__.py
-├── server.py      # MCP server + tool definitions
-├── models.py      # Pydantic models
-├── storage.py     # SQLite backend with hash chain + checkpoints
-├── hasher.py      # Cryptographic hashing
-├── merkle.py      # Merkle tree utilities
-└── anchoring.py   # External trust anchors (TSA, IPFS, OpenTimestamps)
+├── __init__.py       # Package exports
+├── server.py         # MCP server + 13 tool handlers
+├── models.py         # Pydantic models (ConfigDict)
+├── storage.py        # SQLite + WAL + hash chain + checkpoints
+├── hasher.py         # SHA-256 chain integrity + PII redaction
+├── merkle.py         # Merkle tree + proof generation/verification
+└── anchoring.py      # RFC 3161 TSA (DER), IPFS (CIDv0/v1), OpenTimestamps
+
+tests/
+├── test_server.py
+├── test_storage.py
+├── test_hasher.py
+├── test_merkle.py
+├── test_checkpoints.py
+├── test_anchoring.py
+└── conftest.py
 ```
 
 ## ⚙️ Configuration
@@ -293,14 +302,17 @@ Environment variables:
 ## 🗺️ Roadmap
 
 - [x] Core hash chain storage
-- [x] MCP server with 7 tools
+- [x] MCP server with 13 tools
 - [x] PII redaction
 - [x] Query and export
 - [x] Merkle tree checkpoints
 - [x] O(log n) fast verification
-- [x] External anchoring (TSA, OpenTimestamps, IPFS)
+- [x] External anchoring — RFC 3161 TSA (proper DER-encoded), IPFS (spec-compliant CIDv0/CIDv1)
 - [x] Proof packages for third-party verification
+- [x] Tamper-detection integration tests
+- [x] SQLite WAL mode for concurrent access
 - [ ] PostgreSQL backend option
+- [ ] Full Certificate-chain TSA verification (pyasn1 + cryptography)
 - [ ] PDF report generation
 - [ ] Web dashboard
 - [ ] Decision graph (non-linear workflows)

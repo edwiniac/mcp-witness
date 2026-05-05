@@ -194,6 +194,102 @@ class TestChainVerification:
     """Tests for chain integrity verification."""
 
     @pytest.mark.asyncio
+    async def test_tamper_detection_direct_modification(self, temp_storage):
+        """THE critical test: modifying a record in DB breaks the chain."""
+        # Create a chain of records
+        for i in range(5):
+            await temp_storage.record(
+                action_type=ActionType.TOOL_CALL,
+                tool_name=f"tool_{i}",
+            )
+        
+        # Verify chain is valid before tampering
+        result_before = await temp_storage.verify_chain()
+        assert result_before.valid is True
+        
+        # Tamper: directly modify record_hash in the database at sequence 2
+        await temp_storage._db.execute(
+            "UPDATE witness_records SET record_hash = ? WHERE sequence = ?",
+            ("deadbeef" * 8, 2)
+        )
+        await temp_storage._db.commit()
+        
+        # Verify chain should NOW detect tampering
+        result_after = await temp_storage.verify_chain()
+        assert result_after.valid is False, "Chain should detect tampered hash!"
+        assert result_after.first_invalid_sequence is not None
+        assert len(result_after.issues) > 0
+
+    @pytest.mark.asyncio
+    async def test_tamper_detection_prev_hash_break(self, temp_storage):
+        """Breaking the prev_hash link should be detected."""
+        for i in range(5):
+            await temp_storage.record(
+                action_type=ActionType.TOOL_CALL,
+                tool_name=f"tool_{i}",
+            )
+        
+        # Tamper: break the prev_hash link at sequence 3
+        await temp_storage._db.execute(
+            "UPDATE witness_records SET prev_hash = ? WHERE sequence = ?",
+            ("deadbeef" * 8, 3)
+        )
+        await temp_storage._db.commit()
+        
+        result = await temp_storage.verify_chain()
+        assert result.valid is False, "Chain should detect broken prev_hash link!"
+        assert result.first_invalid_sequence == 3, "Should identify the exact break point"
+
+    @pytest.mark.asyncio
+    async def test_tamper_detection_hash_field_modification(self, temp_storage):
+        """Modifying input_hash directly breaks record_hash verification."""
+        await temp_storage.record(
+            action_type=ActionType.TOOL_CALL,
+            tool_name="sensitive_tool",
+            input_data={"api_key": "secret_12345"},
+        )
+        await temp_storage.record(
+            action_type=ActionType.TOOL_CALL,
+            tool_name="normal_tool",
+        )
+        
+        # Verify valid before
+        result_before = await temp_storage.verify_chain()
+        assert result_before.valid is True
+        
+        # Tamper: modify the input_hash field (record_hash depends on it)
+        await temp_storage._db.execute(
+            "UPDATE witness_records SET input_hash = ? WHERE sequence = ?",
+            ("deadbeef" * 8, 0)
+        )
+        await temp_storage._db.commit()
+        
+        # Chain verification should detect the hash mismatch
+        result_after = await temp_storage.verify_chain()
+        assert result_after.valid is False, "Chain should detect modified input_hash!"
+
+    @pytest.mark.asyncio
+    async def test_verify_partial_range_tamper_detection(self, temp_storage):
+        """Tamper in the middle of a range should be detected by range verification."""
+        for i in range(10):
+            await temp_storage.record(
+                action_type=ActionType.TOOL_CALL,
+                tool_name=f"tool_{i}",
+            )
+        
+        # Tamper at sequence 5
+        await temp_storage._db.execute(
+            "UPDATE witness_records SET record_hash = ? WHERE sequence = ?",
+            ("deadbeef" * 8, 5)
+        )
+        await temp_storage._db.commit()
+        
+        # Verify just the tampered range
+        result = await temp_storage.verify_chain(from_sequence=4, to_sequence=7)
+        assert result.valid is False
+        assert result.records_checked == 4  # 4, 5, 6, 7
+
+    @pytest.mark.asyncio
     async def test_verify_empty_chain(self, temp_storage):
         result = await temp_storage.verify_chain()
         
