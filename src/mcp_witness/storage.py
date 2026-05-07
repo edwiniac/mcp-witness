@@ -23,6 +23,13 @@ from .merkle import (
     verify_merkle_proof,
 )
 from .anchoring import AnchorService, AnchorReceipt, AnchorType
+from .security import (
+    check_idempotency,
+    check_rate_limit,
+    compute_action_fingerprint,
+    validate_inputs,
+    enforce_read_only,
+)
 from .models import (
     ActionType,
     ActorType,
@@ -266,17 +273,32 @@ class WitnessStorage:
         _validate_payload_size(input_data, "input_data")
         _validate_payload_size(output_data, "output_data")
         _validate_payload_size(context, "context")
+        validate_inputs(session_id, actor_id, reasoning)
+
+        # Rate limiting
+        check_rate_limit()
+
+        # Compute hashes early (needed for idempotency check)
+        input_hash = hash_data(input_data) if input_data else ""
+        output_hash = hash_data(output_data) if output_data else ""
+        timestamp = datetime.now(timezone.utc)
+
+        # Idempotency check (prevent replay attacks)
+        action_fp = compute_action_fingerprint(
+            action_type=action_type.value,
+            session_id=session_id,
+            input_hash=input_hash,
+            output_hash=output_hash,
+            timestamp=timestamp.isoformat(),
+        )
+        if not check_idempotency(action_fp):
+            raise ValueError("Duplicate action detected. Action already recorded recently.")
 
         # Process data
         redacted_fields = redact_fields or []
         processed_input = do_redact(input_data, redacted_fields) if input_data else None
         processed_output = do_redact(output_data, redacted_fields) if output_data else None
 
-        # Compute hashes
-        input_hash = hash_data(input_data) if input_data else ""
-        output_hash = hash_data(output_data) if output_data else ""
-
-        timestamp = datetime.now(timezone.utc)
         record_id = uuid4()
 
         async def _do_insert():

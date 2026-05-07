@@ -28,6 +28,11 @@ from .models import (
     WitnessRecord,
 )
 from .storage import WitnessStorage
+from .security import (
+    enforce_read_only,
+    sanitize_error,
+    validate_export_path,
+)
 
 # Initialize MCP server
 server = Server("mcp-witness")
@@ -236,7 +241,8 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="witness_export",
             description="Export audit records for compliance reporting. "
-                       "Generates JSON output suitable for auditors.",
+                       "Generates JSON output suitable for auditors. "
+                       "Use the output parameter to write to a file.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -245,6 +251,10 @@ async def list_tools() -> list[Tool]:
                         "enum": ["json", "summary"],
                         "description": "Export format",
                         "default": "json"
+                    },
+                    "output": {
+                        "type": "string",
+                        "description": "Safe output file path (must be within allowed directory)"
                     },
                     "from_time": {
                         "type": "string",
@@ -370,6 +380,9 @@ async def list_tools() -> list[Tool]:
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     """Handle tool calls."""
     try:
+        # Enforce RBAC (read-only mode rejection for write tools)
+        enforce_read_only(name)
+
         store = await get_storage()
         
         if name == "witness_record":
@@ -405,7 +418,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
     
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
+        # Sanitize errors: never leak stack traces to the client
+        safe = sanitize_error(e)
+        return [TextContent(type="text", text=json.dumps(safe, indent=2))]
 
 
 async def handle_record(store: WitnessStorage, args: dict) -> dict:
@@ -618,6 +633,7 @@ async def handle_export(store: WitnessStorage, args: dict) -> dict:
     """Handle witness_export tool call."""
     from_time = None
     to_time = None
+    output_path = args.get("output")
     
     if args.get("from_time"):
         from_time = datetime.fromisoformat(args["from_time"].replace("Z", "+00:00"))
@@ -666,7 +682,7 @@ async def handle_export(store: WitnessStorage, args: dict) -> dict:
         }
     
     # Full JSON export
-    return {
+    export_data = {
         "export_format": "json",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "chain_verification": {
@@ -698,6 +714,20 @@ async def handle_export(store: WitnessStorage, args: dict) -> dict:
             for r in records
         ],
     }
+
+    # Write to file with path traversal protection if output specified
+    if output_path:
+        safe_path = validate_export_path(output_path)
+        with open(safe_path, "w") as f:
+            json.dump(export_data, f, indent=2, default=str)
+        return {
+            "exported": True,
+            "output_path": str(safe_path),
+            "record_count": len(records),
+            "size_bytes": safe_path.stat().st_size,
+        }
+
+    return export_data
 
 
 # =========================================================================
