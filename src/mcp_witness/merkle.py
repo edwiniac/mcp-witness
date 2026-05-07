@@ -1,13 +1,29 @@
-"""Merkle tree utilities for efficient verification."""
+"""Merkle tree utilities for efficient verification.
+
+Domain separation: Leaf and internal-node hashes use distinct prefixes
+(0x00 for leaves, 0x01 for internal nodes) to prevent second-preimage
+attacks where a leaf could be presented as an internal-node proof.
+
+See: https://en.wikipedia.org/wiki/Merkle_tree#Second_preimage_attack
+"""
 
 import hashlib
 from dataclasses import dataclass
 from typing import Optional
 
+# Domain separation prefixes to prevent second-preimage attacks
+LEAF_PREFIX = b"\x00"
+NODE_PREFIX = b"\x01"
+
+
+def hash_leaf(data: str) -> str:
+    """Hash a leaf node (single record hash). Prepends 0x00 prefix."""
+    return hashlib.sha256(LEAF_PREFIX + data.encode()).hexdigest()
+
 
 def hash_pair(left: str, right: str) -> str:
-    """Hash two nodes together."""
-    combined = f"{left}{right}".encode()
+    """Hash two internal nodes together. Prepends 0x01 prefix."""
+    combined = NODE_PREFIX + left.encode() + right.encode()
     return hashlib.sha256(combined).hexdigest()
 
 
@@ -56,27 +72,33 @@ class MerkleProof:
 def build_merkle_tree(record_hashes: list[str]) -> MerkleTree:
     """
     Build a Merkle tree from record hashes.
-    
+
+    Applies domain separation: leaves are hashed with a 0x00 prefix
+    before being inserted; internal nodes use 0x01 prefix (via hash_pair).
+
     Args:
         record_hashes: List of SHA-256 hashes (leaves)
-    
+
     Returns:
         MerkleTree with root and all levels
     """
     if not record_hashes:
         return MerkleTree(root="", levels=[], leaf_count=0)
-    
+
     leaf_count = len(record_hashes)
-    
+
+    # Apply domain separation to leaves
+    domain_separated_leaves = [hash_leaf(h) for h in record_hashes]
+
     # Pad to power of 2 for balanced tree
     n = len(record_hashes)
     next_pow2 = 1
     while next_pow2 < n:
         next_pow2 *= 2
-    
-    # Duplicate last hash to pad (standard Merkle tree behavior)
-    leaves = record_hashes + [record_hashes[-1]] * (next_pow2 - n)
-    
+
+    # Duplicate last domain-separated leaf to pad
+    leaves = domain_separated_leaves + [domain_separated_leaves[-1]] * (next_pow2 - n)
+
     levels = [leaves]
     current = leaves
     

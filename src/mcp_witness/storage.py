@@ -1,7 +1,11 @@
 """SQLite storage backend for mcp-witness."""
 
+import asyncio
 import json
+import logging
 import os
+import re
+import time as time_mod
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -9,8 +13,15 @@ from uuid import UUID
 
 import aiosqlite
 
-from .hasher import GENESIS_HASH, compute_record_hash, hash_data, verify_record_hash
-from .merkle import MerkleTree, MerkleProof, build_merkle_tree, get_merkle_proof, verify_merkle_proof
+from .hasher import GENESIS_HASH, compute_record_hash, hash_data
+from .merkle import (
+    MerkleTree,
+    MerkleProof,
+    build_merkle_tree,
+    get_merkle_proof,
+    hash_leaf,
+    verify_merkle_proof,
+)
 from .anchoring import AnchorService, AnchorReceipt, AnchorType
 from .models import (
     ActionType,
@@ -23,9 +34,51 @@ from .models import (
     WitnessRecord,
 )
 
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
 # Configuration
+# ---------------------------------------------------------------------------
+
 CHECKPOINT_INTERVAL = int(os.getenv("MCP_WITNESS_CHECKPOINT_INTERVAL", "1000"))
 AUTO_ANCHOR = os.getenv("MCP_WITNESS_AUTO_ANCHOR", "false").lower() == "true"
+
+# Payload size limit (10 MB default)
+MAX_PAYLOAD_SIZE = int(os.getenv("MCP_WITNESS_MAX_PAYLOAD_SIZE", str(10 * 1024 * 1024)))
+
+# Session ID validation
+MAX_SESSION_ID_LENGTH = 256
+ALLOWED_SESSION_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_\-:.]*$")
+
+# Retry settings for SQLITE_BUSY
+MAX_RETRIES = 3
+RETRY_BASE_DELAY = 0.05  # 50ms
+
+
+def _validate_session_id(session_id: str) -> None:
+    """Validate session_id to prevent storage anomalies."""
+    if not session_id:
+        return  # Empty is allowed
+    if len(session_id) > MAX_SESSION_ID_LENGTH:
+        raise ValueError(
+            f"session_id exceeds maximum length of {MAX_SESSION_ID_LENGTH}"
+        )
+    if not ALLOWED_SESSION_ID_PATTERN.match(session_id):
+        raise ValueError(
+            "session_id contains invalid characters; "
+            "allowed: alphanumeric, underscore, hyphen, colon, period"
+        )
+
+
+def _validate_payload_size(data: Optional[dict], label: str = "data") -> None:
+    """Validate payload does not exceed size limit."""
+    if data is None:
+        return
+    size = len(json.dumps(data, default=str).encode())
+    if size > MAX_PAYLOAD_SIZE:
+        raise ValueError(
+            f"{label} size ({size} bytes) exceeds limit ({MAX_PAYLOAD_SIZE} bytes)"
+        )
 
 
 class WitnessStorage:
@@ -155,6 +208,30 @@ class WitnessStorage:
         last = await self._get_last_record()
         return (last["sequence"] + 1) if last else 0
     
+    async def _retry_on_busy(self, operation, *args, **kwargs):
+        """
+        Retry an operation on SQLITE_BUSY with exponential backoff.
+
+        SQLite in WAL mode can still return SQLITE_BUSY under concurrent
+        write pressure. This retry loop provides a safety net.
+        """
+        last_exc = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                return await operation(*args, **kwargs)
+            except aiosqlite.OperationalError as e:
+                if "database is locked" in str(e).lower():
+                    last_exc = e
+                    delay = RETRY_BASE_DELAY * (2 ** attempt)
+                    logger.warning(
+                        "SQLITE_BUSY on attempt %d/%d, retrying in %.2fs",
+                        attempt + 1, MAX_RETRIES, delay,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    raise
+        raise last_exc  # type: ignore[misc]
+
     async def record(
         self,
         action_type: ActionType,
@@ -173,42 +250,102 @@ class WitnessStorage:
     ) -> WitnessRecord:
         """
         Record a new action to the witness chain.
-        
+
+        Uses BEGIN IMMEDIATE to prevent race conditions where concurrent
+        writers could create duplicate sequence numbers and fork the chain.
+        Includes input validation and SQLITE_BUSY retry logic.
+
         Returns:
             The created WitnessRecord with computed hashes
         """
         from uuid import uuid4
         from .hasher import redact_fields as do_redact
-        
-        # Get chain state
-        last_record = await self._get_last_record()
-        prev_hash = last_record["record_hash"] if last_record else GENESIS_HASH
-        sequence = (last_record["sequence"] + 1) if last_record else 0
-        
+
+        # Input validation
+        _validate_session_id(session_id)
+        _validate_payload_size(input_data, "input_data")
+        _validate_payload_size(output_data, "output_data")
+        _validate_payload_size(context, "context")
+
         # Process data
         redacted_fields = redact_fields or []
         processed_input = do_redact(input_data, redacted_fields) if input_data else None
         processed_output = do_redact(output_data, redacted_fields) if output_data else None
-        
+
         # Compute hashes
         input_hash = hash_data(input_data) if input_data else ""
         output_hash = hash_data(output_data) if output_data else ""
-        
+
         timestamp = datetime.now(timezone.utc)
         record_id = uuid4()
-        
-        record_hash = compute_record_hash(
-            prev_hash=prev_hash,
-            sequence=sequence,
-            timestamp=timestamp,
-            action_type=action_type.value,
-            actor_id=actor_id,
-            input_hash=input_hash,
-            output_hash=output_hash,
-            tool_name=tool_name,
-        )
-        
-        # Create record
+
+        async def _do_insert():
+            # BEGIN IMMEDIATE locks the write transaction upfront, preventing
+            # concurrent writers from reading stale sequence numbers.
+            await self._db.execute("BEGIN IMMEDIATE")
+            try:
+                # Get chain state inside the transaction
+                last_record = await self._get_last_record()
+                prev_hash = last_record["record_hash"] if last_record else GENESIS_HASH
+                sequence = (last_record["sequence"] + 1) if last_record else 0
+
+                record_hash = compute_record_hash(
+                    prev_hash=prev_hash,
+                    sequence=sequence,
+                    timestamp=timestamp,
+                    action_type=action_type.value,
+                    actor_id=actor_id,
+                    input_hash=input_hash,
+                    output_hash=output_hash,
+                    tool_name=tool_name,
+                )
+
+                await self._db.execute(
+                    """
+                    INSERT INTO witness_records (
+                        id, timestamp, sequence, prev_hash, record_hash,
+                        actor_type, actor_id, session_id,
+                        action_type, tool_name, input_data, output_data,
+                        input_hash, output_hash,
+                        context, reasoning, confidence,
+                        sensitivity, retention_days, tsa_receipt, anchored_at,
+                        redacted_fields
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(record_id),
+                        timestamp.isoformat(),
+                        sequence,
+                        prev_hash,
+                        record_hash,
+                        actor_type.value,
+                        actor_id,
+                        session_id,
+                        action_type.value,
+                        tool_name,
+                        json.dumps(processed_input) if processed_input else None,
+                        json.dumps(processed_output) if processed_output else None,
+                        input_hash,
+                        output_hash,
+                        json.dumps(context) if context else None,
+                        reasoning,
+                        confidence,
+                        sensitivity.value,
+                        retention_days,
+                        None,  # tsa_receipt
+                        None,  # anchored_at
+                        json.dumps(redacted_fields),
+                    )
+                )
+                await self._db.commit()
+                return sequence, prev_hash, record_hash
+            except Exception:
+                await self._db.execute("ROLLBACK")
+                raise
+
+        sequence, prev_hash, record_hash = await self._retry_on_busy(_do_insert)
+
+        # Create record object
         record = WitnessRecord(
             id=record_id,
             timestamp=timestamp,
@@ -231,49 +368,10 @@ class WitnessStorage:
             retention_days=retention_days,
             redacted_fields=redacted_fields,
         )
-        
-        # Insert into database
-        await self._db.execute(
-            """
-            INSERT INTO witness_records (
-                id, timestamp, sequence, prev_hash, record_hash,
-                actor_type, actor_id, session_id,
-                action_type, tool_name, input_data, output_data, input_hash, output_hash,
-                context, reasoning, confidence,
-                sensitivity, retention_days, tsa_receipt, anchored_at,
-                redacted_fields
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                str(record.id),
-                record.timestamp.isoformat(),
-                record.sequence,
-                record.prev_hash,
-                record.record_hash,
-                record.actor_type.value,
-                record.actor_id,
-                record.session_id,
-                record.action_type.value,
-                record.tool_name,
-                json.dumps(record.input_data) if record.input_data else None,
-                json.dumps(record.output_data) if record.output_data else None,
-                record.input_hash,
-                record.output_hash,
-                json.dumps(record.context) if record.context else None,
-                record.reasoning,
-                record.confidence,
-                record.sensitivity.value,
-                record.retention_days,
-                record.tsa_receipt,
-                record.anchored_at,
-                json.dumps(record.redacted_fields),
-            )
-        )
-        await self._db.commit()
-        
-        # Check if we should create a checkpoint
+
+        # Check if we should create a checkpoint (outside the transaction)
         await self._maybe_create_checkpoint(record.sequence)
-        
+
         return record
     
     async def get_by_id(self, record_id: str | UUID) -> Optional[WitnessRecord]:
@@ -667,6 +765,7 @@ class WitnessStorage:
         Get a Merkle proof for a specific record.
         
         Returns proof that can verify the record without checking entire chain.
+        The leaf_hash in the proof is domain-separated (0x00 prefix).
         """
         # Find checkpoint containing this record
         cursor = await self._db.execute(
@@ -687,13 +786,17 @@ class WitnessStorage:
         if not proof:
             return None
         
-        # Get the record's hash
+        # Get the record's hash and apply domain separation to match the tree
         record = await self.get_by_sequence(sequence)
         if not record:
             return None
-        
+
+        # The Merkle tree stores domain-separated leaf hashes.
+        # proof.leaf_hash is the domain-separated version from the tree,
+        # which is what verify_merkle_proof expects.
         return {
             "record_hash": record.record_hash,
+            "domain_separated_leaf_hash": proof.leaf_hash,
             "merkle_root": row["merkle_root"],
             "checkpoint_id": row["id"],
             "proof_path": proof.proof_path,
@@ -710,7 +813,7 @@ class WitnessStorage:
             return result.valid
         
         return verify_merkle_proof(
-            proof_data["record_hash"],
+            proof_data["domain_separated_leaf_hash"],
             proof_data["proof_path"],
             proof_data["merkle_root"]
         )

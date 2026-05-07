@@ -135,8 +135,10 @@ def verify_chain_link(current_hash: str, next_prev_hash: str) -> bool:
     return current_hash == next_prev_hash
 
 
-# Genesis hash for the first record in a chain
-GENESIS_HASH = "0" * 64  # 64 zeros (256 bits)
+# Genesis hash for the first record in a chain.
+# Uses a deterministic, purpose-bound hash (not all-zeros) so that a
+# naturally-occurring zero-hash can never be confused with the chain origin.
+GENESIS_HASH = hashlib.sha256(b"MCP_WITNESS_GENESIS_V1").hexdigest()
 
 
 def is_genesis_record(prev_hash: str) -> bool:
