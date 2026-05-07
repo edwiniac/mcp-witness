@@ -373,6 +373,22 @@ async def list_tools() -> list[Tool]:
                 "properties": {}
             }
         ),
+        Tool(
+            name="witness_configure_compliance",
+            description="Apply a compliance preset (HIPAA, GDPR, SOX, FedRAMP, SOC2, PCI DSS). "
+                       "Automatically configures retention, redaction, attestation, and audit settings.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "preset": {
+                        "type": "string",
+                        "enum": ["hipaa", "gdpr", "sox", "fedramp", "soc2", "pci_dss"],
+                        "description": "Compliance framework to apply"
+                    }
+                },
+                "required": ["preset"]
+            }
+        ),
     ]
 
 
@@ -412,6 +428,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await handle_proof(store, arguments)
         elif name == "witness_backfill":
             result = await handle_backfill(store)
+        elif name == "witness_configure_compliance":
+            result = await handle_compliance(store, arguments)
         else:
             result = {"error": f"Unknown tool: {name}"}
         
@@ -850,6 +868,47 @@ async def handle_backfill(store: WitnessStorage) -> dict:
     return {
         "checkpoints_created": checkpoints_created,
         "status": f"✅ Created {checkpoints_created} checkpoints" if checkpoints_created > 0 else "No new checkpoints needed",
+    }
+
+
+async def handle_compliance(store: WitnessStorage, args: dict) -> dict:
+    """Handle witness_configure_compliance tool call."""
+    from .compliance import get_preset, get_preset_summary
+
+    preset_name = args["preset"]
+    preset = get_preset(preset_name)
+
+    if not preset:
+        return {
+            "error": f"Unknown preset: {preset_name}",
+            "available": ["hipaa", "gdpr", "sox", "fedramp", "soc2", "pci_dss"],
+        }
+
+    summary = get_preset_summary(preset_name)
+
+    return {
+        "applied": preset_name,
+        "preset": {
+            "name": preset.name,
+            "description": preset.description,
+            "retention_days": preset.retention_days,
+            "retention_human": summary["retention_human"] if summary else None,
+            "anchor_frequency": preset.anchor_frequency,
+            "auto_redact_fields": preset.auto_redact,
+            "redact_field_count": len(preset.auto_redact),
+            "requires_attestation": preset.require_attestation,
+            "immutable": preset.immutable,
+            "encryption": preset.encryption or "none specified",
+            "recommended_audit_frequency": preset.audit_frequency,
+        },
+        "next_steps": [
+            f"Set MCP_WITNESS_CHECKPOINT_INTERVAL to match your throughput",
+            f"Set MCP_WITNESS_AUTO_ANCHOR=true to auto-anchor checkpoints",
+            f"Configure MCP_WITNESS_EXPORT_DIR for secure export paths",
+            f"Review {preset.audit_frequency} audit schedule",
+        ],
+        "note": "Preset configuration is advisory. Actual compliance requires organizational policies "
+                "and auditor review. This tool helps technical compliance — it doesn't replace legal review.",
     }
 
 

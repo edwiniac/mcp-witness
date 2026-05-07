@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mcp-witness"
-version = "0.2.0"
+version = "0.3.0"
 description = "Immutable audit trail MCP server for AI decisions - cryptographic proof of what your AI did, when, and why"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["mcp", "audit", "compliance", "soc2", "hipaa", "gdpr", "ai", "logging", "immutable"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.10",
@@ -44,7 +44,7 @@ postgres = [
 ]
 
 [project.scripts]
-mcp-witness = "mcp_witness.server:main"
+mcp-witness = "mcp_witness.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
