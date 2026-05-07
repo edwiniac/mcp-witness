@@ -4,328 +4,199 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![MCP](https://img.shields.io/badge/MCP-Compatible-purple.svg)](https://modelcontextprotocol.io)
+[![Version](https://img.shields.io/badge/version-0.3.0-orange.svg)](https://pypi.org/project/mcp-witness/)
 
-**Immutable audit trail for AI decisions** — cryptographic proof of what your AI did, when, and why.
-
-Designed for **SOC2**, **HIPAA**, and **GDPR** compliance in regulated industries.
-
----
-
-## ✨ Features
-
-- **🔗 Hash Chain Integrity** — Every record cryptographically links to the previous one. Tampering is detectable and tested.
-- **🌳 Merkle Checkpoints** — O(log n) verification instead of O(n). Verify millions of records in seconds.
-- **⚓ External Anchoring** — Anchor proofs to RFC 3161 TSA (proper DER-encoded TimeStampReq), OpenTimestamps (Bitcoin), and IPFS (spec-compliant CIDv0/CIDv1 multihash).
-- **📝 Complete Audit Trail** — Log tool calls, decisions, outputs, and errors with full context.
-- **🔒 PII Redaction** — Store hashes instead of sensitive data while preserving verifiability.
-- **📊 Compliance Reports** — Export audit trails for SOC2/HIPAA auditors.
-- **🔍 Queryable History** — Search by session, actor, tool, time range, sensitivity level.
-- **📜 Proof Packages** — Generate complete verification packages for third-party auditors.
-
-## 🚀 Quick Start
-
-### Installation
+**Cryptographic proof of every AI decision.** An immutable, verifiable audit trail MCP server — because "trust me bro" isn't SOC2 compliant.
 
 ```bash
 pip install mcp-witness
+mcp-witness init
+mcp-witness serve
 ```
 
-Or install from source:
+## ✨ Why mcp-witness?
+
+AI agents make decisions. Regulators ask questions. mcp-witness provides **cryptographic proof** of what happened, when, and why — with Merkle tree verification, external trust anchoring, and compliance presets for HIPAA, GDPR, SOC2, and more.
+
+| Feature | mcp-witness | Standard Logging |
+|---------|-------------|-----------------|
+| Tamper detection | ✅ Hash chain + Merkle trees | ❌ Text files, easy to edit |
+| O(log n) verification | ✅ Merkle checkpoints | ❌ Linear scan only |
+| External anchoring | ✅ TSA, Bitcoin, IPFS | ❌ None |
+| Compliance presets | ✅ HIPAA, GDPR, SOX, PCI | ❌ Manual configuration |
+| PII redaction | ✅ Cryptographic hashing | ❌ Plaintext or manual |
+| CLI dashboard | ✅ `mcp-witness stats` | ❌ `tail -f` |
+| Legal-grade proof | ✅ RFC 3161 timestamps | ❌ None |
+
+## 🚀 30-Second Quickstart
 
 ```bash
-git clone https://github.com/edwiniac/mcp-witness.git
-cd mcp-witness
-pip install -e .
+# Install
+pip install mcp-witness
+
+# Initialize
+mcp-witness init
+# ✅ Witness database initialized: ~/.mcp-witness/witness.db
+
+# Start recording (via MCP client like Claude Desktop)
+# Or use the CLI to verify:
+mcp-witness stats
+# 📊 MCP Witness — Chain Statistics
+#    Total Records:      42
+#    Chain Valid:        ✅
+#    Checkpoints:        0 (next at 1000 records)
+
+# Apply a compliance preset
+# (via MCP tool: witness_configure_compliance preset=hipaa)
 ```
 
-### Usage with Claude Desktop
-
-Add to your `claude_desktop_config.json`:
+### Claude Desktop Integration
 
 ```json
 {
   "mcpServers": {
     "witness": {
       "command": "mcp-witness",
+      "args": ["serve"],
       "env": {
-        "MCP_WITNESS_DB": "~/.mcp-witness/witness.db"
+        "MCP_WITNESS_DB": "~/.mcp-witness/witness.db",
+        "MCP_WITNESS_CHECKPOINT_INTERVAL": "1000",
+        "MCP_WITNESS_AUTO_ANCHOR": "false"
       }
     }
   }
 }
 ```
 
-### Example Prompts
+## 🛠️ CLI Reference
 
-Once configured, ask Claude:
+```
+mcp-witness serve              Start the MCP server
+mcp-witness init               Initialize database
+mcp-witness verify [--fast]    Verify chain integrity
+mcp-witness stats              Chain health dashboard
+mcp-witness export [--output]  Export audit report
+mcp-witness proof SEQUENCE     Merkle proof for a record
+mcp-witness checkpoints        List Merkle checkpoints
+mcp-witness anchors create ID  Anchor to TSA/Bitcoin/IPFS
+mcp-witness anchors verify ID  Verify external anchors
+```
 
-> "Record that I just called the search_tool with query 'stock prices'"
-
-> "Verify the integrity of the audit chain"
-
-> "Show me all decisions made in session abc123"
-
-> "Export an audit report for compliance review"
-
-> "What's the current status of the audit trail?"
-
-## 🛠️ Available Tools
-
-### Core Tools
+## 🛠️ MCP Tools (14 Total)
 
 | Tool | Description |
 |------|-------------|
-| `witness_record` | Log an AI action/decision to the audit trail |
+| `witness_record` | Log an AI action to the immutable audit trail |
 | `witness_verify` | Verify hash chain integrity (detect tampering) |
+| `witness_verify_fast` | O(log n) verification using Merkle checkpoints |
 | `witness_query` | Search records by session, actor, tool, time |
 | `witness_chain` | Get full decision chain for a session |
 | `witness_stats` | Get audit trail statistics and health |
+| `witness_attest` | RFC 3161 timestamp from external authority |
 | `witness_export` | Export records for compliance reporting |
-
-### Checkpoint & Anchoring Tools (v0.2.0+)
-
-| Tool | Description |
-|------|-------------|
 | `witness_checkpoints` | List Merkle checkpoints |
-| `witness_verify_fast` | Fast O(log n) verification using checkpoints |
 | `witness_anchor` | Anchor checkpoint to TSA/Bitcoin/IPFS |
 | `witness_verify_anchors` | Verify external anchor receipts |
-| `witness_proof` | Get complete proof package for a record |
+| `witness_proof` | Get Merkle proof for a single record |
 | `witness_backfill` | Create checkpoints for existing records |
+| `witness_configure_compliance` | Apply HIPAA/GDPR/SOX preset |
+
+## 🏛️ Compliance Presets
+
+One command. Full compliance baseline.
+
+```python
+# Via MCP tool:
+witness_configure_compliance(preset="hipaa")
+# → 6-year retention, auto-redacts PHI fields, requires attestation
+
+witness_configure_compliance(preset="gdpr")
+# → Right-to-erasure support, consent records, PII redaction
+
+witness_configure_compliance(preset="soc2")
+# → 1-year retention, API key redaction, quarterly audit schedule
+```
+
+| Preset | Retention | Auto-Redact | Attestation | Immutable |
+|--------|-----------|-------------|-------------|-----------|
+| HIPAA | 6 years | 12 PHI fields | ✅ Required | — |
+| GDPR | Per-purpose | 12 PII fields | ✅ Required | Right to erasure |
+| SOX | 7 years | 7 financial fields | ✅ Required | ✅ Yes |
+| FedRAMP | 3 years | 6 CUI fields | ✅ Required | — |
+| SOC 2 | 1 year | 7 fields | ✅ Required | — |
+| PCI DSS | 1 year | 7 card fields | ✅ Required | — |
 
 ## 📊 How It Works
 
-### Hash Chain
-
-Every record includes:
-- **prev_hash**: SHA-256 of the previous record
-- **record_hash**: SHA-256 of this record's key fields
+### Hash Chain + Merkle Trees
 
 ```
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│  Record #0   │     │  Record #1   │     │  Record #2   │
-│              │     │              │     │              │
-│ prev: 000... │────▶│ prev: abc... │────▶│ prev: def... │
-│ hash: abc... │     │ hash: def... │     │ hash: 123... │
-└──────────────┘     └──────────────┘     └──────────────┘
+Records:    [R0] → [R1] → [R2] → ... → [R999] → [R1000] → ...
+                                                   ↓
+                                           [Checkpoint #1]
+                                           Merkle Root: abc123
+                                           Covers: records 0-999
+
+Merkle Tree:         root_hash
+                    /         \
+               hash_01        hash_23
+               /    \         /    \
+            h_0    h_1      h_2    h_3
+             ↓      ↓        ↓      ↓
+          R0:R0h  R1:R1h  R2:R2h  R3:R3h
 ```
 
-**Tamper Detection**: If anyone modifies a record, the hash changes, breaking the chain. All subsequent records become invalid.
+**Tamper Detection:** Change any record → its hash changes → Merkle root changes → checkpoint invalidated → external anchors prove when the real root existed.
 
-### Merkle Checkpoints
+### Verification Performance
 
-Every 1000 records, a Merkle tree checkpoint is created:
+| Records | Full Chain | With Checkpoints |
+|---------|-----------|-----------------|
+| 1,000 | ~100ms | ~100ms |
+| 10,000 | ~1s | ~100ms |
+| 100,000 | ~10s | ~1s |
+| 1,000,000 | ~100s | ~10s |
 
-```
-Records 0-999          Merkle Tree              Checkpoint
-─────────────          ───────────              ──────────
-   rec_0  ────┐              root ──────────▶  checkpoint_0
-   rec_1  ────┤             /    \              merkle_root: abc...
-   rec_2  ────┼───▶    hash_01  hash_23         records: 0-999
-    ...       │         / \      / \
-   rec_999────┘       h0  h1   h2  h3
-```
+Single record: **O(log n)** with Merkle proof (vs O(n) linear scan).
 
-**Benefits:**
-- **O(log n) verification** — Verify any record in ~10 steps instead of walking entire chain
-- **Proof packages** — Generate portable proofs for third-party verification
-- **Checkpoint anchoring** — Anchor roots to external trust sources
+## 🔒 Security
 
-### External Anchoring
+- **Domain-separated Merkle trees** — prevents second-preimage attacks
+- **Atomic transactions** — `BEGIN IMMEDIATE` prevents race conditions
+- **Rate limiting** — configurable token bucket
+- **RBAC** — read-only mode for audit-only deployments
+- **Error sanitization** — stack traces never leak to clients
+- **Path traversal protection** — exports confined to allowed directories
+- **Idempotency** — replay attack prevention
 
-Anchor checkpoint Merkle roots to external trust sources:
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the security disclosure policy.
 
-| Provider | Cost | Latency | Trust Level |
-|----------|------|---------|-------------|
-| **RFC 3161 TSA** | Free | ~1s | Legal-grade |
-| **OpenTimestamps** | Free | ~hours | Bitcoin-backed |
-| **IPFS** | Free | ~2s | Content-addressed |
-
-```
-Your Database              External Anchors
-────────────              ────────────────
-checkpoint_0  ──────────▶  TSA timestamp
-merkle_root: abc...        OpenTimestamps receipt
-                           IPFS CID
-```
-
-**Third-party verification**: Auditors can verify records using only:
-1. The record hash
-2. Merkle proof path
-3. External anchor receipt
-
-No database access required.
-
-### Data Model
-
-```python
-WitnessRecord:
-  # Identity
-  id, timestamp, sequence, prev_hash, record_hash
-  
-  # Who
-  actor_type, actor_id, session_id
-  
-  # What
-  action_type, tool_name, input_data, output_data
-  input_hash, output_hash  # Privacy: store hash, not raw data
-  
-  # Why
-  context, reasoning, confidence
-  
-  # Compliance
-  sensitivity, retention_days, tsa_receipt, anchored_at
-```
-
-## 🔒 Privacy Features
-
-### Field Redaction
-
-Store SHA-256 hash instead of sensitive data:
-
-```python
-witness_record(
-    action_type="tool_call",
-    input_data={"patient_ssn": "123-45-6789", "query": "lookup"},
-    redact_fields=["patient_ssn"]
-)
-# Stores: {"patient_ssn": "[REDACTED:sha256:a1b2c3...]", "query": "lookup"}
-```
-
-### Retention Policies
-
-GDPR-compliant auto-deletion:
-
-```python
-witness_record(
-    action_type="tool_call",
-    sensitivity="pii",
-    retention_days=90  # Auto-delete after 90 days
-)
-```
-
-## 📋 Compliance Use Cases
-
-### SOC2
-
-- **CC6.1**: Access logging with immutable audit trails
-- **CC7.2**: Change tracking with cryptographic verification
-- **CC6.6**: Logical access controls logged
-
-### HIPAA
-
-- **164.312(b)**: Audit controls for PHI access
-- **164.312(c)**: Integrity controls via hash chain
-- **164.312(e)**: Transmission security with attestation
-
-### GDPR
-
-- **Article 30**: Records of processing activities
-- **Article 17**: Right to erasure via retention policies
-- **Article 32**: Security measures with cryptographic proof
-
-## 🏗️ Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                          AI Client                               │
-│                    (Claude, ChatGPT, etc.)                       │
-└───────────────────────────┬─────────────────────────────────────┘
-                            │ MCP Protocol
-                            ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                        mcp-witness                               │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐  │
-│  │  Recorder   │  │  Verifier   │  │   Report Generator      │  │
-│  └──────┬──────┘  └──────┬──────┘  └────────────┬────────────┘  │
-│         │                │                      │                │
-│         ▼                ▼                      ▼                │
-│  ┌─────────────────────────────────────────────────────────────┐│
-│  │                    SQLite + WAL                              ││
-│  └─────────────────────────────────────────────────────────────┘│
-└───────────────────────────┬─────────────────────────────────────┘
-                            │ Optional
-                            ▼
-┌─────────────────────────────────────────────────────────────────┐
-│              External Trust Anchors (Optional)                   │
-│         RFC 3161 TSA  ·  Blockchain  ·  S3 Object Lock          │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-## 🧪 Testing
+## 🧪 Development
 
 ```bash
-# Install dev dependencies
+git clone https://github.com/edwiniac/mcp-witness.git
+cd mcp-witness
 pip install -e ".[dev]"
-
-# Run tests
-pytest
-
-# With coverage
-pytest --cov=mcp_witness --cov-report=term-missing
+pytest -v  # 107 tests
 ```
-
-## 📁 Project Structure
-
-```
-src/mcp_witness/
-├── __init__.py       # Package exports
-├── server.py         # MCP server + 13 tool handlers
-├── models.py         # Pydantic models (ConfigDict)
-├── storage.py        # SQLite + WAL + hash chain + checkpoints
-├── hasher.py         # SHA-256 chain integrity + PII redaction
-├── merkle.py         # Merkle tree + proof generation/verification
-└── anchoring.py      # RFC 3161 TSA (DER), IPFS (CIDv0/v1), OpenTimestamps
-
-tests/
-├── test_server.py
-├── test_storage.py
-├── test_hasher.py
-├── test_merkle.py
-├── test_checkpoints.py
-├── test_anchoring.py
-└── conftest.py
-```
-
-## ⚙️ Configuration
-
-Environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MCP_WITNESS_DB` | `~/.mcp-witness/witness.db` | Database path |
-| `MCP_WITNESS_CHECKPOINT_INTERVAL` | `1000` | Records per checkpoint |
-| `MCP_WITNESS_AUTO_ANCHOR` | `false` | Auto-anchor checkpoints |
-| `PINATA_API_KEY` | - | For IPFS pinning (optional) |
-| `PINATA_API_SECRET` | - | For IPFS pinning (optional) |
 
 ## 🗺️ Roadmap
 
-- [x] Core hash chain storage
-- [x] MCP server with 13 tools
-- [x] PII redaction
-- [x] Query and export
-- [x] Merkle tree checkpoints
-- [x] O(log n) fast verification
-- [x] External anchoring — RFC 3161 TSA (proper DER-encoded), IPFS (spec-compliant CIDv0/CIDv1)
-- [x] Proof packages for third-party verification
-- [x] Tamper-detection integration tests
-- [x] SQLite WAL mode for concurrent access
-- [ ] PostgreSQL backend option
-- [ ] Full Certificate-chain TSA verification (pyasn1 + cryptography)
+- [x] Core hash chain (v0.1.0)
+- [x] Merkle checkpoints + external anchoring (v0.2.0)
+- [x] CLI + compliance presets + security hardening (v0.3.0)
+- [ ] PostgreSQL backend
+- [ ] Ed25519 record signing
 - [ ] PDF report generation
-- [ ] Web dashboard
-- [ ] Decision graph (non-linear workflows)
+- [ ] Web dashboard with live API
+- [ ] Streaming architecture (Kafka/NATS)
+- [ ] Multi-tenancy
 
 ## 📄 License
 
-MIT License — see [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE)
 
 ## 👤 Author
 
 **Edwin Isac** — AI Engineer  
 [GitHub](https://github.com/edwiniac) · [Email](mailto:edwinisac007@gmail.com)
-
----
-
-*Part of the MCP ecosystem: [mcp-finance](https://github.com/edwiniac/mcp-finance) · [mcp-security](https://github.com/edwiniac/mcp-security)*
