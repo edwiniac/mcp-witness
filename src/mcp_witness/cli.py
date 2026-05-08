@@ -165,7 +165,6 @@ def cmd_export(args):
     async def _export():
         await store.connect()
         try:
-            from datetime import datetime, timezone
 
             records = await store.query(limit=100000)
             verification = await store.verify_chain()

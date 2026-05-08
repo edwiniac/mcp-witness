@@ -5,10 +5,9 @@ import json
 import logging
 import os
 import re
-import time as time_mod
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 from uuid import UUID
 
 import aiosqlite
@@ -16,10 +15,8 @@ import aiosqlite
 from .hasher import GENESIS_HASH, compute_record_hash, hash_data
 from .merkle import (
     MerkleTree,
-    MerkleProof,
     build_merkle_tree,
     get_merkle_proof,
-    hash_leaf,
     verify_merkle_proof,
 )
 from .anchoring import AnchorService, AnchorReceipt, AnchorType
@@ -28,7 +25,6 @@ from .security import (
     check_rate_limit,
     compute_action_fingerprint,
     validate_inputs,
-    enforce_read_only,
 )
 from .models import (
     ActionType,
@@ -716,7 +712,7 @@ class WitnessStorage:
         if AUTO_ANCHOR:
             try:
                 await self.anchor_checkpoint(checkpoint_id)
-            except Exception as e:
+            except Exception:
                 pass  # Don't fail record creation if anchoring fails
         
         return checkpoint

@@ -1,16 +1,10 @@
-#!/usr/bin/env python3
 """
-mcp-witness Web Dashboard — Standalone HTML viewer for witness databases.
+Dashboard data provider for mcp-witness.
 
-Open this file in a browser, or serve via:
-    python3 -m http.server 8080 --directory src/mcp_witness/dashboard
-
-The dashboard reads the witness database via a lightweight JSON API
-(served by mcp-witness itself or a simple file export).
+Extracts statistics, checkpoints, and recent records from the witness
+DB for rendering in the web dashboard (dashboard/index.html).
 """
 
-import json
-import os
 from pathlib import Path
 
 # ---------------------------------------------------------------------------

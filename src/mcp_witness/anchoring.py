@@ -316,7 +316,7 @@ class TSAProvider(AnchorProvider):
                 else:
                     raise Exception(f"TSA returned HTTP {response.status_code}")
 
-        except Exception as e:
+        except Exception:
             # TSA unavailable: create a local attestation (still auditable,
             # but relies on our own clock, not external TSA)
             pass
@@ -328,7 +328,7 @@ class TSAProvider(AnchorProvider):
             "merkle_root": merkle_root,
             "timestamp": timestamp.isoformat(),
             "tsa_url": self.tsa_url,
-            "tsa_error": str(e) if 'e' in dir() else None,
+            "tsa_error": "TSA unavailable",
             "metadata": metadata,
         }
         attestation_bytes = json.dumps(attestation, sort_keys=True).encode()
@@ -543,7 +543,7 @@ class IPFSProvider(AnchorProvider):
                     follow_redirects=True
                 )
                 return response.status_code == 200
-            except:
+            except Exception:
                 return False
 
 

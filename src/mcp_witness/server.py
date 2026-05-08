@@ -10,7 +10,7 @@ import asyncio
 import json
 import os
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 from uuid import uuid4
 
 from mcp.server import Server
@@ -20,12 +20,7 @@ from mcp.types import Tool, TextContent
 from .models import (
     ActionType,
     ActorType,
-    AttestationResult,
-    ChainStats,
-    ReportResult,
     Sensitivity,
-    VerificationResult,
-    WitnessRecord,
 )
 from .storage import WitnessStorage
 from .security import (
@@ -902,9 +897,9 @@ async def handle_compliance(store: WitnessStorage, args: dict) -> dict:
             "recommended_audit_frequency": preset.audit_frequency,
         },
         "next_steps": [
-            f"Set MCP_WITNESS_CHECKPOINT_INTERVAL to match your throughput",
-            f"Set MCP_WITNESS_AUTO_ANCHOR=true to auto-anchor checkpoints",
-            f"Configure MCP_WITNESS_EXPORT_DIR for secure export paths",
+            "Set MCP_WITNESS_CHECKPOINT_INTERVAL to match your throughput",
+            "Set MCP_WITNESS_AUTO_ANCHOR=true to auto-anchor checkpoints",
+            "Configure MCP_WITNESS_EXPORT_DIR for secure export paths",
             f"Review {preset.audit_frequency} audit schedule",
         ],
         "note": "Preset configuration is advisory. Actual compliance requires organizational policies "
