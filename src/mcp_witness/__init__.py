@@ -1,6 +1,6 @@
 """MCP Witness - Immutable audit trail for AI decisions."""
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 from .anchoring import (
     AnchorReceipt,
@@ -10,6 +10,7 @@ from .anchoring import (
     OpenTimestampsProvider,
     TSAProvider,
 )
+from .auth import AuthRole, authenticate, authorize, load_api_keys
 from .buffered import BufferedStorage
 from .merkle import (
     MerkleProof,
@@ -35,6 +36,11 @@ from .storage_pg import PgStorage
 __all__ = [
     # Version
     "__version__",
+    # Auth / RBAC
+    "AuthRole",
+    "authenticate",
+    "authorize",
+    "load_api_keys",
     # Models
     "ActionType",
     "ActorType",

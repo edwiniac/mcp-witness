@@ -338,3 +338,22 @@ class BufferedStorage(StorageBackend):
 
     async def get_anchor_stats(self) -> dict:
         return await self._backend.get_anchor_stats()
+
+    # ── Rate Limiting ──────────────────────────────────────────────────
+
+    async def check_rate_limit(
+        self, bucket_id: str = "default", max_tokens: float = 1000.0, refill_rate: float = 1000.0
+    ) -> bool:
+        return await self._backend.check_rate_limit(
+            bucket_id=bucket_id, max_tokens=max_tokens, refill_rate=refill_rate
+        )
+
+    async def get_rate_limit_state(self, bucket_id: str = "default") -> dict:
+        return await self._backend.get_rate_limit_state(bucket_id)
+
+    # ── Idempotency ────────────────────────────────────────────────────
+
+    async def check_and_record_nonce(self, nonce_hash: str, ttl_seconds: int = 3600) -> bool:
+        return await self._backend.check_and_record_nonce(
+            nonce_hash=nonce_hash, ttl_seconds=ttl_seconds
+        )

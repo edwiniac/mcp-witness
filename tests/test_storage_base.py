@@ -163,3 +163,57 @@ async def test_sensitivity_filtering(temp_storage):
 
     pii = await temp_storage.query(sensitivity=Sensitivity.PII)
     assert len(pii) == 1
+
+
+# =========================================================================
+# Rate Limiting Contract Tests
+# =========================================================================
+
+@pytest.mark.asyncio
+async def test_check_rate_limit_exists(temp_storage):
+    """Backend implements check_rate_limit."""
+    assert hasattr(temp_storage, "check_rate_limit")
+    result = await temp_storage.check_rate_limit(bucket_id="contract_test")
+    assert isinstance(result, bool)
+
+
+@pytest.mark.asyncio
+async def test_get_rate_limit_state_exists(temp_storage):
+    """Backend implements get_rate_limit_state."""
+    assert hasattr(temp_storage, "get_rate_limit_state")
+    state = await temp_storage.get_rate_limit_state("contract_test")
+    assert isinstance(state, dict)
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_state_nonexistent(temp_storage):
+    """Nonexistent bucket returns empty dict."""
+    state = await temp_storage.get_rate_limit_state("does_not_exist")
+    assert state == {}
+
+
+# =========================================================================
+# Idempotency Contract Tests
+# =========================================================================
+
+@pytest.mark.asyncio
+async def test_check_and_record_nonce_exists(temp_storage):
+    """Backend implements check_and_record_nonce."""
+    assert hasattr(temp_storage, "check_and_record_nonce")
+    result = await temp_storage.check_and_record_nonce("contract_nonce")
+    assert isinstance(result, bool)
+
+
+@pytest.mark.asyncio
+async def test_nonce_new_is_true(temp_storage):
+    """New nonces return True."""
+    result = await temp_storage.check_and_record_nonce("contract_new_nonce")
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_nonce_duplicate_is_false(temp_storage):
+    """Duplicate nonces return False."""
+    nonce = "contract_dup_nonce"
+    assert await temp_storage.check_and_record_nonce(nonce) is True
+    assert await temp_storage.check_and_record_nonce(nonce) is False

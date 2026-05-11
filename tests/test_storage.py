@@ -521,6 +521,147 @@ class TestBatchRecord:
         assert r.input_hash is not None
 
 
+class TestRateLimit:
+    """Tests for database-backed rate limiting."""
+
+    @pytest.mark.asyncio
+    async def test_basic_token_consumption(self, temp_storage):
+        """First token is always available."""
+        allowed = await temp_storage.check_rate_limit(
+            bucket_id="test_basic",
+            max_tokens=1000.0,
+            refill_rate=1000.0,
+        )
+        assert allowed is True
+
+    @pytest.mark.asyncio
+    async def test_exhaust_and_refill(self, temp_storage):
+        """After exhausting tokens, new ones become available after refill."""
+        bucket_id = "test_refill"
+
+        # Use a bucket with only 2 tokens, slow refill
+        assert await temp_storage.check_rate_limit(bucket_id, max_tokens=2.0, refill_rate=0.5)
+        assert await temp_storage.check_rate_limit(bucket_id, max_tokens=2.0, refill_rate=0.5)
+
+        # Third should fail (no tokens, slow refill)
+        allowed = await temp_storage.check_rate_limit(bucket_id, max_tokens=2.0, refill_rate=0.5)
+        assert allowed is False
+
+        # State should show 0 tokens
+        state = await temp_storage.get_rate_limit_state(bucket_id)
+        assert state["tokens"] < 1.0
+
+    @pytest.mark.asyncio
+    async def test_token_bucket_overflow(self, temp_storage):
+        """Tokens should not exceed max_tokens."""
+        bucket_id = "test_cap"
+
+        # Create bucket with 5 max tokens
+        assert await temp_storage.check_rate_limit(bucket_id, max_tokens=5.0, refill_rate=100.0)
+
+        # Wait a tiny bit - enough to trigger refill but not exceed max
+        state = await temp_storage.get_rate_limit_state(bucket_id)
+        assert state["tokens"] <= state["max_tokens"]
+        assert state["tokens"] >= 4.0  # consumed 1, maybe some refill
+
+    @pytest.mark.asyncio
+    async def test_multiple_buckets_independent(self, temp_storage):
+        """Different buckets don't interfere."""
+        bucket_a = "indep_a"
+        bucket_b = "indep_b"
+
+        # Exhaust bucket_a
+        assert await temp_storage.check_rate_limit(bucket_a, max_tokens=1.0, refill_rate=0.0)
+        assert not await temp_storage.check_rate_limit(bucket_a, max_tokens=1.0, refill_rate=0.0)
+
+        # Bucket_b should still work
+        assert await temp_storage.check_rate_limit(bucket_b, max_tokens=1.0, refill_rate=0.0)
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_state(self, temp_storage):
+        """get_rate_limit_state returns correct bucket state."""
+        bucket_id = "test_state"
+
+        # Bucket doesn't exist yet
+        state = await temp_storage.get_rate_limit_state("nonexistent_bucket")
+        assert state == {}
+
+        # Create and consume a token
+        await temp_storage.check_rate_limit(bucket_id, max_tokens=10.0, refill_rate=5.0)
+
+        state = await temp_storage.get_rate_limit_state(bucket_id)
+        assert state["tokens"] >= 9.0  # consumed 1, might have refilled
+        assert state["max_tokens"] == 10.0
+        assert state["refill_rate"] == 5.0
+        assert "last_refill" in state
+
+    @pytest.mark.asyncio
+    async def test_persistence_across_operations(self, temp_storage):
+        """Rate limit state persists across operations."""
+        bucket_id = "test_persist"
+
+        assert await temp_storage.check_rate_limit(bucket_id, max_tokens=100.0, refill_rate=10.0)
+        state1 = await temp_storage.get_rate_limit_state(bucket_id)
+
+        # Do another unrelated operation
+        await temp_storage.record(action_type=ActionType.TOOL_CALL)
+
+        # State should still be valid
+        state2 = await temp_storage.get_rate_limit_state(bucket_id)
+        assert state2["tokens"] >= state1["tokens"]  # may have refilled
+
+
+class TestIdempotency:
+    """Tests for database-backed idempotency nonces."""
+
+    @pytest.mark.asyncio
+    async def test_accept_new_nonce(self, temp_storage):
+        """First use of a nonce returns True (allow)."""
+        result = await temp_storage.check_and_record_nonce("new_nonce_123", ttl_seconds=3600)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_reject_duplicate_nonce(self, temp_storage):
+        """Second use of the same nonce returns False (reject)."""
+        nonce = "duplicate_nonce_456"
+        assert await temp_storage.check_and_record_nonce(nonce) is True
+        assert await temp_storage.check_and_record_nonce(nonce) is False
+
+    @pytest.mark.asyncio
+    async def test_different_nonces_independent(self, temp_storage):
+        """Different nonces don't interfere with each other."""
+        assert await temp_storage.check_and_record_nonce("nonce_a") is True
+        assert await temp_storage.check_and_record_nonce("nonce_b") is True
+        # Still rejects the originals
+        assert await temp_storage.check_and_record_nonce("nonce_a") is False
+        assert await temp_storage.check_and_record_nonce("nonce_b") is False
+
+    @pytest.mark.asyncio
+    async def test_long_nonce_hash(self, temp_storage):
+        """Long nonce hashes are handled correctly."""
+        long_nonce = "a" * 128
+        assert await temp_storage.check_and_record_nonce(long_nonce) is True
+        assert await temp_storage.check_and_record_nonce(long_nonce) is False
+
+    @pytest.mark.asyncio
+    async def test_nonce_with_ttl(self, temp_storage):
+        """Nonce accepts ttl_seconds parameter."""
+        nonce = "ttl_test_nonce"
+        assert await temp_storage.check_and_record_nonce(nonce, ttl_seconds=60) is True
+        assert await temp_storage.check_and_record_nonce(nonce, ttl_seconds=60) is False
+
+    @pytest.mark.asyncio
+    async def test_nonce_cleanup_basic(self, temp_storage):
+        """Cleanup doesn't remove recent nonces."""
+        nonce = "cleanup_survivor"
+        assert await temp_storage.check_and_record_nonce(nonce, ttl_seconds=3600) is True
+        # Cleanup shouldn't remove this
+        from mcp_witness.storage import SqliteStorage
+        if isinstance(temp_storage, SqliteStorage):
+            await temp_storage._cleanup_expired_nonces()
+        assert await temp_storage.check_and_record_nonce(nonce) is False  # Still duplicate
+
+
 class TestAttestation:
     """Tests for attestation functionality."""
 

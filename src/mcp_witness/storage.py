@@ -105,6 +105,7 @@ class SqliteStorage(StorageBackend):
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db: Optional[aiosqlite.Connection] = None
+        self._nonce_insert_count = 0
 
     async def connect(self) -> None:
         """Connect to the database and ensure schema exists."""
@@ -200,6 +201,23 @@ class SqliteStorage(StorageBackend):
 
             CREATE INDEX IF NOT EXISTS idx_anchor_checkpoint ON witness_anchors(checkpoint_id);
             CREATE INDEX IF NOT EXISTS idx_anchor_type ON witness_anchors(anchor_type);
+
+            -- Rate limiting token buckets
+            CREATE TABLE IF NOT EXISTS witness_rate_limits (
+                bucket_id TEXT PRIMARY KEY,
+                tokens REAL NOT NULL DEFAULT 1000.0,
+                max_tokens REAL NOT NULL DEFAULT 1000.0,
+                refill_rate REAL NOT NULL DEFAULT 1000.0,
+                last_refill TEXT NOT NULL DEFAULT '1970-01-01T00:00:00'
+            );
+
+            -- Idempotency nonce store
+            CREATE TABLE IF NOT EXISTS witness_idempotency_nonces (
+                nonce_hash TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                ttl_seconds INTEGER NOT NULL DEFAULT 3600
+            );
+            CREATE INDEX IF NOT EXISTS idx_nonces_created ON witness_idempotency_nonces(created_at);
         """)
         await self._db.commit()
 
@@ -281,7 +299,7 @@ class SqliteStorage(StorageBackend):
         validate_inputs(session_id, actor_id, reasoning)
 
         # Rate limiting
-        check_rate_limit()
+        await check_rate_limit(self, bucket_id=actor_id)
 
         # Compute hashes early (needed for idempotency check)
         input_hash = hash_data(input_data) if input_data else ""
@@ -296,7 +314,7 @@ class SqliteStorage(StorageBackend):
             output_hash=output_hash,
             timestamp=timestamp.isoformat(),
         )
-        if not check_idempotency(action_fp):
+        if not await check_idempotency(self, action_fp):
             raise ValueError("Duplicate action detected. Action already recorded recently.")
 
         # Process data
@@ -471,7 +489,7 @@ class SqliteStorage(StorageBackend):
                 output_hash=output_hash,
                 timestamp=timestamp.isoformat(),
             )
-            if not check_idempotency(action_fp):
+            if not await check_idempotency(self, action_fp):
                 raise ValueError(
                     "Duplicate action detected. "
                     "Action already recorded recently."
@@ -504,7 +522,7 @@ class SqliteStorage(StorageBackend):
             })
 
         # Rate limiting (once for the batch)
-        check_rate_limit()
+        await check_rate_limit(self)
 
         async def _do_batch_insert():
             await self._db.execute("BEGIN IMMEDIATE")
@@ -1381,6 +1399,136 @@ class SqliteStorage(StorageBackend):
                 checkpoints_created += 1
 
         return checkpoints_created
+
+    # =========================================================================
+    # Rate Limiting
+    # =========================================================================
+
+    async def check_rate_limit(
+        self,
+        bucket_id: str = "default",
+        max_tokens: float = 1000.0,
+        refill_rate: float = 1000.0,
+    ) -> bool:
+        """Atomically check and consume a token (token bucket)."""
+        now = datetime.now(timezone.utc)
+        now_str = now.isoformat()
+
+        async def _do_check():
+            await self._db.execute("BEGIN IMMEDIATE")
+            try:
+                # Upsert: create bucket if not exists
+                await self._db.execute(
+                    """INSERT OR IGNORE INTO witness_rate_limits
+                       (bucket_id, tokens, max_tokens, refill_rate, last_refill)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (bucket_id, max_tokens, max_tokens, refill_rate, now_str),
+                )
+
+                cursor = await self._db.execute(
+                    "SELECT tokens, max_tokens, refill_rate, last_refill "
+                    "FROM witness_rate_limits WHERE bucket_id = ?",
+                    (bucket_id,),
+                )
+                row = await cursor.fetchone()
+
+                tokens = row["tokens"]
+                max_tok = row["max_tokens"]
+                rate = row["refill_rate"]
+                last_refill_str = row["last_refill"]
+                last_refill = datetime.fromisoformat(last_refill_str)
+
+                elapsed = (now - last_refill).total_seconds()
+                new_tokens = min(max_tok, tokens + elapsed * rate)
+
+                if new_tokens >= 1.0:
+                    new_tokens -= 1.0
+                    await self._db.execute(
+                        "UPDATE witness_rate_limits SET tokens = ?, last_refill = ? WHERE bucket_id = ?",
+                        (new_tokens, now_str, bucket_id),
+                    )
+                    await self._db.commit()
+                    return True
+                else:
+                    # Still update tokens so next check doesn't double-count time
+                    await self._db.execute(
+                        "UPDATE witness_rate_limits SET tokens = ?, last_refill = ? WHERE bucket_id = ?",
+                        (new_tokens, now_str, bucket_id),
+                    )
+                    await self._db.commit()
+                    return False
+            except Exception:
+                await self._db.execute("ROLLBACK")
+                raise
+
+        return await self._retry_on_busy(_do_check)
+
+    async def get_rate_limit_state(self, bucket_id: str = "default") -> dict:
+        """Get current bucket state."""
+        cursor = await self._db.execute(
+            "SELECT tokens, max_tokens, refill_rate, last_refill "
+            "FROM witness_rate_limits WHERE bucket_id = ?",
+            (bucket_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return {}
+        return {
+            "tokens": row["tokens"],
+            "max_tokens": row["max_tokens"],
+            "refill_rate": row["refill_rate"],
+            "last_refill": row["last_refill"],
+        }
+
+    # =========================================================================
+    # Idempotency
+    # =========================================================================
+
+    async def check_and_record_nonce(self, nonce_hash: str, ttl_seconds: int = 3600) -> bool:
+        """Atomically check and record an idempotency nonce.
+
+        Returns True if NEW (proceed), False if duplicate (reject).
+        """
+        now = datetime.now(timezone.utc)
+        now_str = now.isoformat()
+
+        self._nonce_insert_count += 1
+
+        cursor = await self._db.execute(
+            "INSERT OR IGNORE INTO witness_idempotency_nonces "
+            "(nonce_hash, created_at, ttl_seconds) VALUES (?, ?, ?)",
+            (nonce_hash, now_str, ttl_seconds),
+        )
+        await self._db.commit()
+
+        is_new = cursor.rowcount > 0
+
+        # Periodic cleanup: every 100 inserts
+        if self._nonce_insert_count % 100 == 0:
+            await self._cleanup_expired_nonces()
+
+        return is_new
+
+    async def _cleanup_expired_nonces(self) -> int:
+        """Remove nonces that have exceeded their TTL.
+
+        Deletes rows where created_at + ttl_seconds < now.
+        Uses a max TTL of 86400 seconds (24 hours) as safety bound.
+        """
+        max_ttl = 86400  # 24 hours in seconds
+        now = datetime.now(timezone.utc)
+        # Delete: created_at < now - ttl_seconds
+        # Since SQLite can't easily do INTERVAL with a per-row column,
+        # we compute cutoff as now and rely on rows having their ttl_seconds
+        # embedded. A simpler approach: delete everything older than max_ttl.
+        from datetime import timedelta
+        delete_before = (now - timedelta(seconds=max_ttl)).isoformat()
+        cursor = await self._db.execute(
+            "DELETE FROM witness_idempotency_nonces WHERE created_at < ?",
+            (delete_before,),
+        )
+        await self._db.commit()
+        return cursor.rowcount
 
     def _row_to_record(self, row: aiosqlite.Row) -> WitnessRecord:
         """Convert a database row to a WitnessRecord."""

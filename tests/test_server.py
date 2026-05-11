@@ -262,6 +262,69 @@ class TestHandleAttest:
         assert "error" in result
 
 
+# =========================================================================
+# Auth Integration Tests
+# =========================================================================
+
+
+class TestCallToolAuth:
+    """Tests for auth integration in call_tool."""
+
+    @pytest.mark.asyncio
+    async def test_call_tool_open_mode(self, temp_storage):
+        """Open mode (no keys) allows all tools."""
+        from unittest.mock import patch
+
+        from mcp_witness.server import call_tool
+
+        with patch("mcp_witness.server.get_storage", return_value=temp_storage):
+            with patch.dict("os.environ", {}, clear=True):
+                result = await call_tool("witness_stats", {})
+
+        import json
+        data = json.loads(result[0].text)
+        assert "total_records" in data or "error" not in data
+
+    @pytest.mark.asyncio
+    async def test_call_tool_with_auth_admin(self, temp_storage):
+        """Admin key can call any tool."""
+        from unittest.mock import patch
+
+        from mcp_witness.server import call_tool
+
+        with patch("mcp_witness.server.get_storage", return_value=temp_storage):
+            with patch.dict("os.environ", {
+                "MCP_WITNESS_API_KEYS": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:admin",
+                "MCP_WITNESS_API_KEY": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            }, clear=True):
+                result = await call_tool("witness_stats", {})
+
+        import json
+        data = json.loads(result[0].text)
+        assert "total_records" in data
+
+    @pytest.mark.asyncio
+    async def test_call_tool_with_auth_read_only(self, temp_storage):
+        """Auditor cannot call write tools."""
+        from unittest.mock import patch
+
+        from mcp_witness.server import call_tool
+
+        with patch("mcp_witness.server.get_storage", return_value=temp_storage):
+            with patch.dict("os.environ", {
+                "MCP_WITNESS_API_KEYS": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:auditor",
+                "MCP_WITNESS_API_KEY": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            }, clear=True):
+                result = await call_tool("witness_record", {"action_type": "tool_call"})
+
+        import json
+        data = json.loads(result[0].text)
+        assert "error" in data or "PermissionError" in str(data)
+        # Should have error (PermissionError is safe and gets type+message)
+        if "error" in data:
+            assert "permission" in data.get("error", "").lower() or "role" in data.get("error", "").lower()
+
+
 class TestHandleExport:
     """Tests for handle_export."""
 

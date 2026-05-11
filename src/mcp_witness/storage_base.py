@@ -232,3 +232,45 @@ class StorageBackend(ABC):
     async def get_anchor_stats(self) -> dict:
         """Get anchoring statistics."""
         ...
+
+    # ── Rate Limiting ─────────────────────────────────────────────────────
+
+    @abstractmethod
+    async def check_rate_limit(
+        self,
+        bucket_id: str = "default",
+        max_tokens: float = 1000.0,
+        refill_rate: float = 1000.0,
+    ) -> bool:
+        """Atomically check and consume a token.
+
+        Implements a token bucket algorithm backed by the database.
+        Returns True if a token was available and consumed (request allowed),
+        False if the bucket is empty (rate limited).
+
+        The bucket is auto-created on first access with the given parameters.
+        """
+        ...
+
+    @abstractmethod
+    async def get_rate_limit_state(self, bucket_id: str = "default") -> dict:
+        """Get current bucket state.
+
+        Returns:
+            dict with keys: tokens, max_tokens, refill_rate, last_refill
+            Returns an empty dict if the bucket doesn't exist yet.
+        """
+        ...
+
+    # ── Idempotency ───────────────────────────────────────────────────────
+
+    @abstractmethod
+    async def check_and_record_nonce(self, nonce_hash: str, ttl_seconds: int = 3600) -> bool:
+        """Atomically check and record an idempotency nonce.
+
+        Returns True if this is a NEW nonce (allow the operation),
+        False if it's a DUPLICATE (reject the operation).
+
+        Periodically cleans up expired nonces to prevent unbounded growth.
+        """
+        ...

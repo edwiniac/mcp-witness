@@ -2,18 +2,19 @@
 Security utilities for mcp-witness.
 
 Provides:
-- Rate limiting to prevent audit trail flooding
-- Role-based access control (read-only vs read-write modes)
+- HMAC key management for hash chain protection
+- Database-backed rate limiting (token bucket)
+- Database-backed idempotency (nonce store)
 - Error sanitization to prevent stack trace leakage
 - Path traversal protection for exports
-- Idempotency checks to prevent replay attacks
+- Payload input validation
 """
 
 import hashlib
 import logging
 import os
 import re
-import time
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -58,7 +59,7 @@ def get_hmac_key() -> Optional[bytes]:
 
 
 # ---------------------------------------------------------------------------
-# Rate Limiting
+# Rate Limiting — DB-backed token bucket
 # ---------------------------------------------------------------------------
 
 MAX_RECORDS_PER_SECOND = int(os.getenv(
@@ -69,43 +70,31 @@ MAX_RECORDS_PER_SECOND = int(os.getenv(
 MAX_RECORDS_PER_MINUTE = MAX_RECORDS_PER_SECOND * 60
 
 
-class RateLimiter:
-    """Simple in-memory token bucket rate limiter."""
+async def check_rate_limit(
+    storage: object,
+    bucket_id: str = "default",
+    max_tokens: float = 1000.0,
+    refill_rate: float = 1000.0,
+) -> None:
+    """Check and consume a rate limit token.
 
-    def __init__(self, max_per_second: int = MAX_RECORDS_PER_SECOND):
-        self.max_per_second = max_per_second
-        self._window_start = time.monotonic()
-        self._count = 0
+    Uses the storage backend's token bucket implementation.
+    Raises ValueError if rate limit exceeded.
 
-    def allow(self) -> bool:
-        """Check if another request is allowed. Returns True if OK."""
-        now = time.monotonic()
-        if now - self._window_start >= 1.0:
-            self._window_start = now
-            self._count = 0
-        if self._count >= self.max_per_second:
-            return False
-        self._count += 1
-        return True
-
-    @property
-    def remaining(self) -> int:
-        """Remaining requests in current window."""
-        return max(0, self.max_per_second - self._count)
-
-
-_rate_limiter = RateLimiter()
-
-
-def check_rate_limit() -> None:
+    Args:
+        storage: StorageBackend instance to perform the check.
+        bucket_id: Token bucket identifier (typically the actor_id).
+        max_tokens: Maximum tokens the bucket can hold.
+        refill_rate: Tokens added per second.
     """
-    Raise ValueError if rate limit exceeded.
-
-    Call before every witness_record.
-    """
-    if not _rate_limiter.allow():
+    allowed = await storage.check_rate_limit(  # type: ignore[union-attr]
+        bucket_id=bucket_id,
+        max_tokens=max_tokens,
+        refill_rate=refill_rate,
+    )
+    if not allowed:
         raise ValueError(
-            f"Rate limit exceeded ({_rate_limiter.max_per_second}/s). "
+            f"Rate limit exceeded ({max_tokens:.0f}/s) for bucket '{bucket_id}'. "
             f"Configure MCP_WITNESS_RATE_LIMIT to adjust."
         )
 
@@ -114,32 +103,26 @@ def check_rate_limit() -> None:
 # RBAC (Role-Based Access Control)
 # ---------------------------------------------------------------------------
 
-READ_ONLY_MODE = os.getenv("MCP_WITNESS_READ_ONLY", "false").lower() == "true"
+# NOTE: RBAC has moved to src/mcp_witness/auth.py.
+# The deprecated READ_ONLY_MODE is now handled there.
+# This module retains only the import compatibility shim.
 
 
 def enforce_read_only(tool_name: str) -> None:
+    """DEPRECATED. Use auth.authenticate() + auth.authorize() instead.
+
+    Raises a deprecation warning and delegates to the new auth module.
     """
-    Raise PermissionError if in read-only mode and tool writes.
+    warnings.warn(
+        "enforce_read_only() is deprecated. Use auth.authenticate() and "
+        "auth.authorize() from mcp_witness.auth instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    from .auth import authenticate, authorize
 
-    Tools that modify state: witness_record, witness_attest,
-    witness_anchor, witness_backfill, witness_configure_compliance.
-    """
-    if not READ_ONLY_MODE:
-        return
-
-    write_tools = {
-        "witness_record",
-        "witness_attest",
-        "witness_anchor",
-        "witness_backfill",
-        "witness_configure_compliance",
-    }
-
-    if tool_name in write_tools:
-        raise PermissionError(
-            "Server is in read-only mode. "
-            "Set MCP_WITNESS_READ_ONLY=false to enable writes."
-        )
+    role = authenticate()
+    authorize(role, tool_name)
 
 
 # ---------------------------------------------------------------------------
@@ -170,33 +153,24 @@ def sanitize_error(exc: Exception) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Idempotency
+# Idempotency — DB-backed nonce store
 # ---------------------------------------------------------------------------
 
-# In-memory set of recent record hashes to prevent replay attacks
-# In production this should be a bounded LRU cache
-_idempotency_cache: set[str] = set()
-_idempotency_max_size = int(os.getenv("MCP_WITNESS_IDEMPOTENCY_CACHE", "10000"))
+async def check_idempotency(
+    storage: object,
+    nonce_hash: str,
+    ttl_seconds: int = 3600,
+) -> bool:
+    """Check and record an idempotency nonce.
 
-
-def check_idempotency(payload_hash: str) -> bool:
-    """
-    Check if a payload was already recorded recently.
-
+    Uses the storage backend's persistent nonce store.
     Returns True if this is a NEW payload (allow it),
     False if it's a duplicate (reject it).
     """
-    if payload_hash in _idempotency_cache:
-        logger.warning("Duplicate payload rejected: %s", payload_hash[:16])
-        return False
-
-    # Evict if cache grows too large
-    if len(_idempotency_cache) >= _idempotency_max_size:
-        _idempotency_cache.clear()
-        logger.info("Idempotency cache evicted (size limit reached)")
-
-    _idempotency_cache.add(payload_hash)
-    return True
+    return await storage.check_and_record_nonce(  # type: ignore[union-attr]
+        nonce_hash=nonce_hash,
+        ttl_seconds=ttl_seconds,
+    )
 
 
 def compute_action_fingerprint(

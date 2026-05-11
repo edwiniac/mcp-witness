@@ -17,13 +17,13 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+from .auth import authenticate, authorize
 from .models import (
     ActionType,
     ActorType,
     Sensitivity,
 )
 from .security import (
-    enforce_read_only,
     sanitize_error,
     validate_export_path,
 )
@@ -419,8 +419,9 @@ async def list_tools() -> list[Tool]:
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     """Handle tool calls."""
     try:
-        # Enforce RBAC (read-only mode rejection for write tools)
-        enforce_read_only(name)
+        # Authenticate and authorize
+        role = authenticate()
+        authorize(role, name)
 
         store = await get_storage()
 

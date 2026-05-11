@@ -123,6 +123,7 @@ class PgStorage(StorageBackend):
         self.dsn = dsn or DEFAULT_PG_URL
         self._pool: Optional[asyncpg.Pool] = None
         self._anchor_service: Optional[AnchorService] = None
+        self._nonce_insert_count = 0
 
     async def connect(self) -> None:
         """Connect to PostgreSQL and ensure schema exists."""
@@ -219,6 +220,23 @@ class PgStorage(StorageBackend):
 
                 CREATE INDEX IF NOT EXISTS idx_pg_anchor_checkpoint ON witness_anchors(checkpoint_id);
                 CREATE INDEX IF NOT EXISTS idx_pg_anchor_type ON witness_anchors(anchor_type);
+
+                -- Rate limiting token buckets
+                CREATE TABLE IF NOT EXISTS witness_rate_limits (
+                    bucket_id TEXT PRIMARY KEY,
+                    tokens DOUBLE PRECISION NOT NULL DEFAULT 1000.0,
+                    max_tokens DOUBLE PRECISION NOT NULL DEFAULT 1000.0,
+                    refill_rate DOUBLE PRECISION NOT NULL DEFAULT 1000.0,
+                    last_refill TIMESTAMPTZ NOT NULL DEFAULT '1970-01-01T00:00:00+00:00'
+                );
+
+                -- Idempotency nonce store
+                CREATE TABLE IF NOT EXISTS witness_idempotency_nonces (
+                    nonce_hash TEXT PRIMARY KEY,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    ttl_seconds INTEGER NOT NULL DEFAULT 3600
+                );
+                CREATE INDEX IF NOT EXISTS idx_pg_nonces_created ON witness_idempotency_nonces(created_at);
             """)
 
     # =========================================================================
@@ -303,7 +321,7 @@ class PgStorage(StorageBackend):
         validate_inputs(session_id, actor_id, reasoning)
 
         # Rate limiting
-        check_rate_limit()
+        await check_rate_limit(self, bucket_id=actor_id)
 
         # Compute hashes early (needed for idempotency check)
         input_hash = hash_data(input_data) if input_data else ""
@@ -318,7 +336,7 @@ class PgStorage(StorageBackend):
             output_hash=output_hash,
             timestamp=timestamp.isoformat(),
         )
-        if not check_idempotency(action_fp):
+        if not await check_idempotency(self, action_fp):
             raise ValueError("Duplicate action detected. Action already recorded recently.")
 
         # Process data
@@ -479,7 +497,7 @@ class PgStorage(StorageBackend):
                 output_hash=output_hash,
                 timestamp=timestamp.isoformat(),
             )
-            if not check_idempotency(action_fp):
+            if not await check_idempotency(self, action_fp):
                 raise ValueError(
                     "Duplicate action detected. "
                     "Action already recorded recently."
@@ -512,7 +530,7 @@ class PgStorage(StorageBackend):
             })
 
         # Rate limiting (once for the batch)
-        check_rate_limit()
+        await check_rate_limit(self)
 
         async with self._pool.acquire() as conn:
             async with conn.transaction():
@@ -1328,6 +1346,122 @@ class PgStorage(StorageBackend):
                 "step_4": "Verify external anchors via verification_url",
             },
         }
+
+    # =========================================================================
+    # Rate Limiting
+    # =========================================================================
+
+    async def check_rate_limit(
+        self,
+        bucket_id: str = "default",
+        max_tokens: float = 1000.0,
+        refill_rate: float = 1000.0,
+    ) -> bool:
+        """Atomically check and consume a token (token bucket)."""
+        now = datetime.now(timezone.utc)
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                # Upsert: create bucket if not exists
+                await conn.execute(
+                    """INSERT INTO witness_rate_limits
+                       (bucket_id, tokens, max_tokens, refill_rate, last_refill)
+                       VALUES ($1, $2, $3, $4, $5)
+                       ON CONFLICT (bucket_id) DO NOTHING""",
+                    bucket_id, max_tokens, max_tokens, refill_rate, now,
+                )
+
+                row = await conn.fetchrow(
+                    "SELECT tokens, max_tokens, refill_rate, last_refill "
+                    "FROM witness_rate_limits WHERE bucket_id = $1",
+                    bucket_id,
+                )
+
+                tokens = row["tokens"]
+                max_tok = row["max_tokens"]
+                rate = row["refill_rate"]
+                last_refill = row["last_refill"]
+
+                elapsed = (now - last_refill).total_seconds()
+                new_tokens = min(max_tok, tokens + elapsed * rate)
+
+                if new_tokens >= 1.0:
+                    new_tokens -= 1.0
+                    await conn.execute(
+                        "UPDATE witness_rate_limits SET tokens = $1, last_refill = $2 WHERE bucket_id = $3",
+                        new_tokens, now, bucket_id,
+                    )
+                    return True
+                else:
+                    await conn.execute(
+                        "UPDATE witness_rate_limits SET tokens = $1, last_refill = $2 WHERE bucket_id = $3",
+                        new_tokens, now, bucket_id,
+                    )
+                    return False
+
+    async def get_rate_limit_state(self, bucket_id: str = "default") -> dict:
+        """Get current bucket state."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT tokens, max_tokens, refill_rate, last_refill "
+                "FROM witness_rate_limits WHERE bucket_id = $1",
+                bucket_id,
+            )
+            if not row:
+                return {}
+            return {
+                "tokens": row["tokens"],
+                "max_tokens": row["max_tokens"],
+                "refill_rate": row["refill_rate"],
+                "last_refill": row["last_refill"].isoformat(),
+            }
+
+    # =========================================================================
+    # Idempotency
+    # =========================================================================
+
+    async def check_and_record_nonce(self, nonce_hash: str, ttl_seconds: int = 3600) -> bool:
+        """Atomically check and record an idempotency nonce.
+
+        Returns True if NEW (proceed), False if duplicate (reject).
+        """
+        now = datetime.now(timezone.utc)
+
+        self._nonce_insert_count += 1
+
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                """INSERT INTO witness_idempotency_nonces
+                   (nonce_hash, created_at, ttl_seconds)
+                   VALUES ($1, $2, $3)
+                   ON CONFLICT (nonce_hash) DO NOTHING""",
+                nonce_hash, now, ttl_seconds,
+            )
+
+        # asyncpg returns "INSERT 0 1" for success, "INSERT 0 0" for no-op
+        is_new = "1" in result
+
+        # Periodic cleanup: every 100 inserts
+        if self._nonce_insert_count % 100 == 0:
+            await self._cleanup_expired_nonces()
+
+        return is_new
+
+    async def _cleanup_expired_nonces(self) -> int:
+        """Remove nonces that have exceeded max TTL (24 hours)."""
+        from datetime import timedelta
+
+        max_ttl = 86400  # 24 hours in seconds
+        now = datetime.now(timezone.utc)
+        delete_before = now - timedelta(seconds=max_ttl)
+
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM witness_idempotency_nonces WHERE created_at < $1",
+                delete_before,
+            )
+            parts = result.split()
+            return int(parts[1]) if len(parts) == 2 else 0
 
     async def get_anchor_stats(self) -> dict:
         """Get anchoring statistics."""
