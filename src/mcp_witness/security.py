@@ -126,6 +126,95 @@ def enforce_read_only(tool_name: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Ed25519 Signing Key — Non-Repudiation
+# ---------------------------------------------------------------------------
+
+_SIGNING_KEY_UNSET = object()
+_signing_key: object = _SIGNING_KEY_UNSET
+_public_key_bytes: object = _SIGNING_KEY_UNSET
+
+
+def get_signing_key() -> Optional[object]:
+    """Get the Ed25519 signing key for record non-repudiation.
+
+    Reads from the ``MCP_WITNESS_SIGNING_KEY`` environment variable.
+    When set, the value must be a hex-encoded 32-byte (64 hex char) seed
+    for Ed25519 key generation.
+    When NOT set, returns ``None`` — signing is disabled and records are
+    created without signatures (backward-compatible mode).
+
+    If the key is not set on first call, a new keypair is generated and
+    cached for the process lifetime. The public key is logged at startup
+    so operators can capture it for external verification.
+
+    The key is resolved ONCE per process lifetime (module-level lazy singleton).
+
+    Returns:
+        The Ed25519 private key, or ``None`` if no signing key is configured
+        and auto-generation is disabled.
+    """
+    global _signing_key, _public_key_bytes
+    if _signing_key is not _SIGNING_KEY_UNSET:
+        return _signing_key
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    env_key = os.getenv("MCP_WITNESS_SIGNING_KEY", "").strip()
+    if env_key:
+        seed = bytes.fromhex(env_key)
+        if len(seed) != 32:
+            raise ValueError(
+                f"MCP_WITNESS_SIGNING_KEY must be 32 bytes hex-encoded, got {len(seed)} bytes"
+            )
+        _signing_key = ed25519.Ed25519PrivateKey.from_private_bytes(seed)
+    else:
+        _signing_key = None
+        _public_key_bytes = None
+        logger.info(
+            "Ed25519 signing key not configured (MCP_WITNESS_SIGNING_KEY unset). "
+            "Records will NOT be signed. Set the env var for non-repudiation."
+        )
+        return None
+
+    # Extract public key bytes
+    _public_key_bytes = _signing_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    logger.info(
+        "Ed25519 signing key loaded. Public key: %s",
+        _public_key_bytes.hex(),
+    )
+    return _signing_key
+
+
+def get_public_key_bytes() -> Optional[bytes]:
+    """Get the Ed25519 public key bytes for external verification.
+
+    Returns the public key derived from the configured signing key, or
+    ``None`` if signing is disabled.
+
+    Returns:
+        Raw public key bytes (32 bytes), or ``None`` if signing is disabled.
+    """
+    if _public_key_bytes is _SIGNING_KEY_UNSET:
+        # Trigger lazy loading
+        get_signing_key()
+    return _public_key_bytes  # type: ignore[return-value]
+
+
+def get_public_key_hex() -> Optional[str]:
+    """Get the Ed25519 public key as a hex string.
+
+    Returns:
+        Hex-encoded public key, or ``None`` if signing is disabled.
+    """
+    pk_bytes = get_public_key_bytes()
+    return pk_bytes.hex() if pk_bytes else None
+
+
+# ---------------------------------------------------------------------------
 # Error Sanitization
 # ---------------------------------------------------------------------------
 

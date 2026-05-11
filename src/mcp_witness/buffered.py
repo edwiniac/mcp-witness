@@ -353,6 +353,11 @@ class BufferedStorage(StorageBackend):
 
     # ── Idempotency ────────────────────────────────────────────────────
 
+    # ── Signing / Non-Repudiation ────────────────────────────────────────
+
+    async def get_signer_public_key(self) -> Optional[str]:
+        return await self._backend.get_signer_public_key()
+
     async def check_and_record_nonce(self, nonce_hash: str, ttl_seconds: int = 3600) -> bool:
         return await self._backend.check_and_record_nonce(
             nonce_hash=nonce_hash, ttl_seconds=ttl_seconds

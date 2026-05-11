@@ -206,3 +206,57 @@ def redact_fields(data: dict, field_paths: list[str]) -> dict:
     for path in field_paths:
         result = redact_field(result, path)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Ed25519 Record Signing — Non-Repudiation
+# ---------------------------------------------------------------------------
+
+
+def sign_record_hash(record_hash: str, signing_key) -> str:
+    """Sign a record hash with an Ed25519 signing key.
+
+    The record hash (a hex-encoded SHA-256 digest) is signed to provide
+    non-repudiation: the signer cannot later deny having created this
+    record. The signature is additive — it does NOT replace the hash
+    chain or HMAC protection.
+
+    Args:
+        record_hash: Hex-encoded SHA-256 hash of the record.
+        signing_key: An ``Ed25519PrivateKey`` instance from
+            ``cryptography.hazmat.primitives.asymmetric.ed25519``.
+
+    Returns:
+        Hex-encoded Ed25519 signature.
+
+    Raises:
+        TypeError: If ``signing_key`` is not an Ed25519 private key.
+    """
+    data = record_hash.encode("utf-8")
+    signature = signing_key.sign(data)
+    return signature.hex()
+
+
+def verify_record_signature(
+    record_hash: str,
+    signature: str,
+    public_key_bytes: bytes,
+) -> bool:
+    """Verify an Ed25519 signature against a record hash.
+
+    Args:
+        record_hash: The hex-encoded SHA-256 hash that was signed.
+        signature: Hex-encoded Ed25519 signature to verify.
+        public_key_bytes: Raw Ed25519 public key bytes (32 bytes).
+
+    Returns:
+        ``True`` if the signature is valid, ``False`` otherwise.
+    """
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    try:
+        public_key = ed25519.Ed25519PublicKey.from_public_bytes(public_key_bytes)
+        public_key.verify(bytes.fromhex(signature), record_hash.encode("utf-8"))
+        return True
+    except Exception:
+        return False

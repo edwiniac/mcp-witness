@@ -69,6 +69,10 @@ class WitnessRecord(BaseModel):
     tsa_receipt: Optional[bytes] = None
     anchored_at: Optional[str] = None
 
+    # Signatures (Ed25519, optional)
+    signature: Optional[str] = Field(default=None, description="Ed25519 signature of record_hash, hex-encoded")
+    signer_public_key: Optional[str] = Field(default=None, description="Ed25519 public key of signer, hex-encoded")
+
     # Metadata
     redacted_fields: list[str] = Field(default_factory=list)
 

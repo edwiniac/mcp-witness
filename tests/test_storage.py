@@ -684,3 +684,188 @@ class TestAttestation:
         updated = await temp_storage.get_by_id(record.id)
         assert updated.tsa_receipt == b"test_receipt"
         assert updated.anchored_at == "2026-03-01T12:00:00Z"
+
+
+class TestEd25519StorageSigning:
+    """Tests for Ed25519 signing in storage operations."""
+
+    @pytest.mark.asyncio
+    async def test_record_no_signing_when_key_unset(self, temp_storage):
+        """Records created without MCP_WITNESS_SIGNING_KEY have no signature."""
+        record = await temp_storage.record(
+            action_type=ActionType.TOOL_CALL,
+            tool_name="unsigned_tool",
+        )
+        assert record.signature is None
+        assert record.signer_public_key is None
+
+    @pytest.mark.asyncio
+    async def test_signer_public_key_none_when_disabled(self, temp_storage):
+        """get_signer_public_key returns None when signing is disabled."""
+        pk = await temp_storage.get_signer_public_key()
+        assert pk is None
+
+    @pytest.mark.asyncio
+    async def test_verify_chain_with_unsigned_records(self, temp_storage):
+        """Unsigned records pass chain verification (backward compat)."""
+        for i in range(5):
+            await temp_storage.record(
+                action_type=ActionType.TOOL_CALL,
+                tool_name=f"tool_{i}",
+            )
+        result = await temp_storage.verify_chain()
+        assert result.valid is True
+        assert result.records_checked == 5
+
+    @pytest.mark.asyncio
+    async def test_mixed_signed_unsigned_chain(self, temp_storage):
+        """Mixed chain with unsigned records only verifies fine."""
+        # Since no signing key, all records are unsigned
+        # This tests that verify_chain handles unsigned records gracefully
+        for i in range(3):
+            await temp_storage.record(
+                action_type=ActionType.TOOL_CALL,
+                tool_name=f"tool_{i}",
+            )
+        result = await temp_storage.verify_chain()
+        assert result.valid is True
+
+    @pytest.mark.asyncio
+    async def test_signed_records_persist_with_signing_key(self, monkeypatch, temp_storage):
+        """With a signing key configured, records contain signatures."""
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+
+        # Generate a key and set it as env var
+        private_key = ed25519.Ed25519PrivateKey.generate()
+        seed = private_key.private_bytes_raw()
+        monkeypatch.setenv("MCP_WITNESS_SIGNING_KEY", seed.hex())
+
+        # Re-import to reset the lazy singleton
+        import importlib
+
+        import mcp_witness.security as sec
+        importlib.reload(sec)
+
+        # Need a fresh storage to pick up the key
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "signed.db"
+            from mcp_witness.storage import SqliteStorage
+            store = SqliteStorage(str(db_path))
+            await store.connect()
+
+            record = await store.record(
+                action_type=ActionType.TOOL_CALL,
+                tool_name="signed_tool",
+            )
+            assert record.signature is not None
+            assert record.signer_public_key is not None
+            assert len(record.signature) == 128  # Ed25519 sig = 64 bytes = 128 hex chars
+
+            # Verify the chain with signatures
+            result = await store.verify_chain()
+            assert result.valid is True
+
+            # Read back and check signature persisted
+            retrieved = await store.get_by_id(record.id)
+            assert retrieved.signature == record.signature
+            assert retrieved.signer_public_key == record.signer_public_key
+
+            await store.close()
+
+        importlib.reload(sec)  # Restore original state
+
+    @pytest.mark.asyncio
+    async def test_verify_chain_rejects_tampered_signature(self, monkeypatch, temp_storage):
+        """Chain verification fails when a stored signature is tampered."""
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+
+        private_key = ed25519.Ed25519PrivateKey.generate()
+        seed = private_key.private_bytes_raw()
+        monkeypatch.setenv("MCP_WITNESS_SIGNING_KEY", seed.hex())
+
+        import importlib
+
+        import mcp_witness.security as sec
+        importlib.reload(sec)
+
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "tampered.db"
+            from mcp_witness.storage import SqliteStorage
+            store = SqliteStorage(str(db_path))
+            await store.connect()
+
+            await store.record(
+                action_type=ActionType.TOOL_CALL,
+                tool_name="record_0",
+            )
+            await store.record(
+                action_type=ActionType.TOOL_CALL,
+                tool_name="record_1",
+            )
+
+            # Tamper with the signature in DB
+            await store._db.execute(
+                "UPDATE witness_records SET signature = 'deadbeef' WHERE sequence = 1"
+            )
+            await store._db.commit()
+
+            result = await store.verify_chain()
+            assert result.valid is False
+            assert any("Ed25519 signature verification failed" in issue for issue in result.issues)
+
+            await store.close()
+
+        importlib.reload(sec)  # Restore original state
+
+    @pytest.mark.asyncio
+    async def test_get_signer_public_key_with_key(self, monkeypatch):
+        """get_signer_public_key returns the public key when signing is enabled."""
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+
+        private_key = ed25519.Ed25519PrivateKey.generate()
+        seed = private_key.private_bytes_raw()
+        monkeypatch.setenv("MCP_WITNESS_SIGNING_KEY", seed.hex())
+
+        import importlib
+
+        import mcp_witness.security as sec
+        importlib.reload(sec)
+
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "pk_test.db"
+            from mcp_witness.storage import SqliteStorage
+            store = SqliteStorage(str(db_path))
+            await store.connect()
+
+            pk = await store.get_signer_public_key()
+            assert pk is not None
+            assert len(pk) == 64  # 32 bytes = 64 hex chars
+
+            # The public key is derived from the seed, not the seed itself
+            from cryptography.hazmat.primitives import serialization
+            expected_pk = private_key.public_key().public_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PublicFormat.Raw,
+            ).hex()
+            assert pk == expected_pk
+
+            await store.close()
+
+        importlib.reload(sec)  # Restore original state
+
+    @pytest.mark.asyncio
+    async def test_batch_records_no_signing_when_key_unset(self, temp_storage):
+        """Batch records have no signature when signing is disabled."""
+        records = await temp_storage.batch_record([
+            {"action_type": ActionType.TOOL_CALL, "tool_name": "a"},
+            {"action_type": ActionType.DECISION, "reasoning": "b"},
+        ])
+        for r in records:
+            assert r.signature is None
+            assert r.signer_public_key is None

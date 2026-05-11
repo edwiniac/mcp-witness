@@ -9,8 +9,10 @@ from mcp_witness.hasher import (
     is_genesis_record,
     redact_field,
     redact_fields,
+    sign_record_hash,
     verify_chain_link,
     verify_record_hash,
+    verify_record_signature,
 )
 
 
@@ -245,3 +247,88 @@ class TestRedaction:
     def test_redact_empty_data(self):
         assert redact_field({}, "field") == {}
         assert redact_field(None, "field") is None
+
+
+class TestEd25519Signing:
+    """Tests for Ed25519 record signing."""
+
+    def _make_keypair(self):
+        """Create a fresh Ed25519 keypair for testing."""
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+
+        private_key = ed25519.Ed25519PrivateKey.generate()
+        public_key_bytes = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        return private_key, public_key_bytes
+
+    def test_sign_and_verify_roundtrip(self):
+        """Sign a record hash and verify it with the matching public key."""
+        private_key, public_key = self._make_keypair()
+        record_hash = hash_data({"action": "test", "value": 42})
+
+        signature = sign_record_hash(record_hash, private_key)
+        assert isinstance(signature, str)
+        assert len(signature) > 0
+
+        assert verify_record_signature(record_hash, signature, public_key) is True
+
+    def test_signature_deterministic(self):
+        """Same key and same hash produce the same signature."""
+        private_key, _ = self._make_keypair()
+        record_hash = hash_data("deterministic test")
+
+        sig1 = sign_record_hash(record_hash, private_key)
+        sig2 = sign_record_hash(record_hash, private_key)
+        assert sig1 == sig2
+
+    def test_wrong_key_fails_verification(self):
+        """Signature created with one key cannot be verified with a different key."""
+        key_a, pub_a = self._make_keypair()
+        key_b, pub_b = self._make_keypair()
+        record_hash = hash_data("who signed this?")
+
+        sig_a = sign_record_hash(record_hash, key_a)
+        # Key B cannot verify Key A's signature
+        assert verify_record_signature(record_hash, sig_a, pub_b) is False
+
+    def test_wrong_hash_fails_verification(self):
+        """Signature valid for one hash fails for a different hash."""
+        private_key, public_key = self._make_keypair()
+        hash_a = hash_data("original data")
+        hash_b = hash_data("tampered data")
+
+        sig = sign_record_hash(hash_a, private_key)
+        assert verify_record_signature(hash_b, sig, public_key) is False
+
+    def test_corrupted_signature_fails(self):
+        """A corrupted signature string fails verification."""
+        private_key, public_key = self._make_keypair()
+        record_hash = hash_data("important decision")
+
+        valid_sig = sign_record_hash(record_hash, private_key)
+        corrupted = "00" + valid_sig[2:]  # flip first byte
+        assert verify_record_signature(record_hash, corrupted, public_key) is False
+
+    def test_invalid_hex_signature_fails(self):
+        """Non-hex signature string fails gracefully."""
+        _, public_key = self._make_keypair()
+        record_hash = hash_data("test")
+        assert verify_record_signature(record_hash, "not-hex-data!!", public_key) is False
+
+    def test_empty_public_key_fails(self):
+        """Invalid public key bytes fail gracefully."""
+        private_key, _ = self._make_keypair()
+        record_hash = hash_data("test")
+        sig = sign_record_hash(record_hash, private_key)
+        assert verify_record_signature(record_hash, sig, b"") is False
+
+    def test_sign_record_hash_length(self):
+        """Ed25519 signature is exactly 128 hex characters (64 bytes)."""
+        private_key, _ = self._make_keypair()
+        record_hash = hash_data({"action": "tool_call"})
+        sig = sign_record_hash(record_hash, private_key)
+        # Ed25519 signature is 64 bytes = 128 hex chars
+        assert len(sig) == 128

@@ -217,3 +217,17 @@ async def test_nonce_duplicate_is_false(temp_storage):
     nonce = "contract_dup_nonce"
     assert await temp_storage.check_and_record_nonce(nonce) is True
     assert await temp_storage.check_and_record_nonce(nonce) is False
+
+
+# =========================================================================
+# Signing / Non-Repudiation Contract Tests
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_get_signer_public_key_exists(temp_storage):
+    """Backend implements get_signer_public_key."""
+    assert hasattr(temp_storage, "get_signer_public_key")
+    result = await temp_storage.get_signer_public_key()
+    # Without signing key configured, returns None
+    assert result is None

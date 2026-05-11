@@ -15,7 +15,13 @@ from uuid import UUID
 import aiosqlite
 
 from .anchoring import AnchorReceipt, AnchorService, AnchorType
-from .hasher import GENESIS_HASH, compute_record_hash, hash_data
+from .hasher import (
+    GENESIS_HASH,
+    compute_record_hash,
+    hash_data,
+    sign_record_hash,
+    verify_record_signature,
+)
 from .merkle import (
     MerkleTree,
     build_merkle_tree,
@@ -37,6 +43,8 @@ from .security import (
     check_rate_limit,
     compute_action_fingerprint,
     get_hmac_key,
+    get_public_key_hex,
+    get_signing_key,
     validate_inputs,
 )
 from .storage_base import StorageBackend
@@ -152,6 +160,8 @@ class SqliteStorage(StorageBackend):
                 anchored_at TEXT,
 
                 redacted_fields TEXT,
+                signature TEXT,
+                signer_public_key TEXT,
 
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
@@ -346,6 +356,14 @@ class SqliteStorage(StorageBackend):
                     hmac_key=get_hmac_key(),
                 )
 
+                # Sign record for non-repudiation (only if signing key is configured)
+                signing_key = get_signing_key()
+                signature = None
+                signer_pk = None
+                if signing_key is not None:
+                    signature = sign_record_hash(record_hash, signing_key)
+                    signer_pk = get_public_key_hex()
+
                 await self._db.execute(
                     """
                     INSERT INTO witness_records (
@@ -355,8 +373,8 @@ class SqliteStorage(StorageBackend):
                         input_hash, output_hash,
                         context, reasoning, confidence,
                         sensitivity, retention_days, tsa_receipt, anchored_at,
-                        redacted_fields
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        redacted_fields, signature, signer_public_key
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         str(record_id),
@@ -381,15 +399,18 @@ class SqliteStorage(StorageBackend):
                         None,  # tsa_receipt
                         None,  # anchored_at
                         json.dumps(redacted_fields),
+                        signature,
+                        signer_pk,
                     )
                 )
+
                 await self._db.commit()
-                return sequence, prev_hash, record_hash
+                return sequence, prev_hash, record_hash, signature, signer_pk
             except Exception:
                 await self._db.execute("ROLLBACK")
                 raise
 
-        sequence, prev_hash, record_hash = await self._retry_on_busy(_do_insert)
+        sequence, prev_hash, record_hash, signature, signer_pk = await self._retry_on_busy(_do_insert)
 
         # Create record object
         record = WitnessRecord(
@@ -412,6 +433,8 @@ class SqliteStorage(StorageBackend):
             confidence=confidence,
             sensitivity=sensitivity,
             retention_days=retention_days,
+            signature=signature,
+            signer_public_key=signer_pk,
             redacted_fields=redacted_fields,
         )
 
@@ -531,6 +554,7 @@ class SqliteStorage(StorageBackend):
                 prev_hash = last_record["record_hash"] if last_record else GENESIS_HASH
                 sequence = (last_record["sequence"] + 1) if last_record else 0
 
+                signing_key = get_signing_key()
                 result_records = []
                 for rec in processed:
                     action_type = rec["action_type"]
@@ -546,6 +570,13 @@ class SqliteStorage(StorageBackend):
                         hmac_key=hmac_key,
                     )
 
+                    # Sign record for non-repudiation (only if signing key is configured)
+                    signature = None
+                    signer_pk = None
+                    if signing_key is not None:
+                        signature = sign_record_hash(record_hash, signing_key)
+                        signer_pk = get_public_key_hex()
+
                     await self._db.execute(
                         """
                         INSERT INTO witness_records (
@@ -555,8 +586,8 @@ class SqliteStorage(StorageBackend):
                             input_hash, output_hash,
                             context, reasoning, confidence,
                             sensitivity, retention_days, tsa_receipt, anchored_at,
-                            redacted_fields
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            redacted_fields, signature, signer_public_key
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             str(rec["record_id"]),
@@ -581,6 +612,8 @@ class SqliteStorage(StorageBackend):
                             None,  # tsa_receipt
                             None,  # anchored_at
                             json.dumps(rec["redact_fields_list"]),
+                            signature,
+                            signer_pk,
                         )
                     )
 
@@ -604,6 +637,8 @@ class SqliteStorage(StorageBackend):
                         confidence=rec["confidence"],
                         sensitivity=rec["sensitivity"],
                         retention_days=rec["retention_days"],
+                        signature=signature,
+                        signer_public_key=signer_pk,
                         redacted_fields=rec["redact_fields_list"],
                     )
                     result_records.append(record)
@@ -778,6 +813,27 @@ class SqliteStorage(StorageBackend):
                     f"expected {expected_hash[:16]}..., got {record.record_hash[:16]}..."
                 )
 
+            # Verify Ed25519 signature (if present — backward compat with unsigned records)
+            if record.signature and record.signer_public_key:
+                try:
+                    pk_bytes = bytes.fromhex(record.signer_public_key)
+                    if not verify_record_signature(
+                        record.record_hash,
+                        record.signature,
+                        pk_bytes,
+                    ):
+                        if first_invalid is None:
+                            first_invalid = record.sequence
+                        issues.append(
+                            f"Ed25519 signature verification failed at sequence {record.sequence}"
+                        )
+                except Exception:
+                    if first_invalid is None:
+                        first_invalid = record.sequence
+                    issues.append(
+                        f"Ed25519 signature data error at sequence {record.sequence}"
+                    )
+
             prev_hash = record.record_hash
 
         return VerificationResult(
@@ -875,6 +931,10 @@ class SqliteStorage(StorageBackend):
         )
         await self._db.commit()
         return cursor.rowcount > 0
+
+    async def get_signer_public_key(self) -> Optional[str]:
+        """Get the current signer's Ed25519 public key (hex), or None if signing is disabled."""
+        return get_public_key_hex()
 
     async def cleanup_expired(self) -> int:
         """Delete records past their retention period."""
@@ -1554,6 +1614,8 @@ class SqliteStorage(StorageBackend):
             retention_days=row["retention_days"],
             tsa_receipt=row["tsa_receipt"],
             anchored_at=row["anchored_at"],
+            signature=row["signature"] if "signature" in row.keys() else None,
+            signer_public_key=row["signer_public_key"] if "signer_public_key" in row.keys() else None,
             redacted_fields=json.loads(row["redacted_fields"]) if row["redacted_fields"] else [],
         )
 

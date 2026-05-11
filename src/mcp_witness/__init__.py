@@ -12,6 +12,7 @@ from .anchoring import (
 )
 from .auth import AuthRole, authenticate, authorize, load_api_keys
 from .buffered import BufferedStorage
+from .hasher import sign_record_hash, verify_record_signature
 from .merkle import (
     MerkleProof,
     MerkleTree,
@@ -63,6 +64,9 @@ __all__ = [
     "build_merkle_tree",
     "get_merkle_proof",
     "verify_merkle_proof",
+    # Signing / Non-repudiation
+    "sign_record_hash",
+    "verify_record_signature",
     # Anchoring
     "AnchorService",
     "AnchorReceipt",

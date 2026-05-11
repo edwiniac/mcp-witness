@@ -13,7 +13,13 @@ from uuid import UUID
 import asyncpg
 
 from .anchoring import AnchorReceipt, AnchorService, AnchorType
-from .hasher import GENESIS_HASH, compute_record_hash, hash_data
+from .hasher import (
+    GENESIS_HASH,
+    compute_record_hash,
+    hash_data,
+    sign_record_hash,
+    verify_record_signature,
+)
 from .merkle import (
     MerkleTree,
     build_merkle_tree,
@@ -35,6 +41,8 @@ from .security import (
     check_rate_limit,
     compute_action_fingerprint,
     get_hmac_key,
+    get_public_key_hex,
+    get_signing_key,
     validate_inputs,
 )
 from .storage_base import StorageBackend
@@ -173,6 +181,8 @@ class PgStorage(StorageBackend):
                     anchored_at TEXT,
 
                     redacted_fields JSONB,
+                    signature TEXT,
+                    signer_public_key TEXT,
 
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 );
@@ -280,6 +290,8 @@ class PgStorage(StorageBackend):
             retention_days=row["retention_days"],
             tsa_receipt=row.get("tsa_receipt"),
             anchored_at=row.get("anchored_at"),
+            signature=row.get("signature"),
+            signer_public_key=row.get("signer_public_key"),
             redacted_fields=_deserialize_json(row.get("redacted_fields")) or [],
         )
 
@@ -365,6 +377,14 @@ class PgStorage(StorageBackend):
                     hmac_key=get_hmac_key(),
                 )
 
+                # Sign record for non-repudiation (only if signing key is configured)
+                signing_key = get_signing_key()
+                signature = None
+                signer_pk = None
+                if signing_key is not None:
+                    signature = sign_record_hash(record_hash, signing_key)
+                    signer_pk = get_public_key_hex()
+
                 await conn.execute(
                     """
                     INSERT INTO witness_records (
@@ -374,10 +394,10 @@ class PgStorage(StorageBackend):
                         input_hash, output_hash,
                         context, reasoning, confidence,
                         sensitivity, retention_days, tsa_receipt, anchored_at,
-                        redacted_fields
+                        redacted_fields, signature, signer_public_key
                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                               $11, $12, $13, $14, $15, $16, $17, $18, $19,
-                              $20, $21, $22)
+                              $20, $21, $22, $23, $24)
                     """,
                     record_id,
                     timestamp,
@@ -401,6 +421,8 @@ class PgStorage(StorageBackend):
                     None,  # tsa_receipt
                     None,  # anchored_at
                     _serialize_json(redacted_fields),
+                    signature,
+                    signer_pk,
                 )
 
         # Create record object
@@ -424,6 +446,8 @@ class PgStorage(StorageBackend):
             confidence=confidence,
             sensitivity=sensitivity,
             retention_days=retention_days,
+            signature=signature,
+            signer_public_key=signer_pk,
             redacted_fields=redacted_fields,
         )
 
@@ -538,6 +562,7 @@ class PgStorage(StorageBackend):
                 prev_hash = last_record["record_hash"] if last_record else GENESIS_HASH
                 sequence = (last_record["sequence"] + 1) if last_record else 0
 
+                signing_key = get_signing_key()
                 result_records = []
                 for rec in processed:
                     action_type = rec["action_type"]
@@ -553,6 +578,13 @@ class PgStorage(StorageBackend):
                         hmac_key=hmac_key,
                     )
 
+                    # Sign record for non-repudiation (only if signing key is configured)
+                    signature = None
+                    signer_pk = None
+                    if signing_key is not None:
+                        signature = sign_record_hash(record_hash, signing_key)
+                        signer_pk = get_public_key_hex()
+
                     await conn.execute(
                         """
                         INSERT INTO witness_records (
@@ -562,10 +594,10 @@ class PgStorage(StorageBackend):
                             input_hash, output_hash,
                             context, reasoning, confidence,
                             sensitivity, retention_days, tsa_receipt, anchored_at,
-                            redacted_fields
+                            redacted_fields, signature, signer_public_key
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                                   $11, $12, $13, $14, $15, $16, $17, $18, $19,
-                                  $20, $21, $22)
+                                  $20, $21, $22, $23, $24)
                         """,
                         rec["record_id"],
                         rec["timestamp"],
@@ -589,6 +621,8 @@ class PgStorage(StorageBackend):
                         None,  # tsa_receipt
                         None,  # anchored_at
                         _serialize_json(rec["redact_fields_list"]),
+                        signature,
+                        signer_pk,
                     )
 
                     record = WitnessRecord(
@@ -611,6 +645,8 @@ class PgStorage(StorageBackend):
                         confidence=rec["confidence"],
                         sensitivity=rec["sensitivity"],
                         retention_days=rec["retention_days"],
+                        signature=signature,
+                        signer_public_key=signer_pk,
                         redacted_fields=rec["redact_fields_list"],
                     )
                     result_records.append(record)
@@ -784,6 +820,27 @@ class PgStorage(StorageBackend):
                         f"Hash mismatch at sequence {record.sequence}: "
                         f"expected {expected_hash[:16]}..., got {record.record_hash[:16]}..."
                     )
+
+                # Verify Ed25519 signature (if present — backward compat with unsigned records)
+                if record.signature and record.signer_public_key:
+                    try:
+                        pk_bytes = bytes.fromhex(record.signer_public_key)
+                        if not verify_record_signature(
+                            record.record_hash,
+                            record.signature,
+                            pk_bytes,
+                        ):
+                            if first_invalid is None:
+                                first_invalid = record.sequence
+                            issues.append(
+                                f"Ed25519 signature verification failed at sequence {record.sequence}"
+                            )
+                    except Exception:
+                        if first_invalid is None:
+                            first_invalid = record.sequence
+                        issues.append(
+                            f"Ed25519 signature data error at sequence {record.sequence}"
+                        )
 
                 prev_hash = record.record_hash
 
@@ -960,6 +1017,10 @@ class PgStorage(StorageBackend):
     # =========================================================================
     # Retention
     # =========================================================================
+
+    async def get_signer_public_key(self) -> Optional[str]:
+        """Get the current signer's Ed25519 public key (hex), or None if signing is disabled."""
+        return get_public_key_hex()
 
     async def cleanup_expired(self) -> int:
         """Delete records past their retention period."""

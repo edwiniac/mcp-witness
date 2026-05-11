@@ -202,6 +202,18 @@ class StorageBackend(ABC):
         """Create checkpoints for existing records that don't have them."""
         ...
 
+    # ── Signing / Non-Repudiation ────────────────────────────────────────
+
+    @abstractmethod
+    async def get_signer_public_key(self) -> Optional[str]:
+        """Get the current signer's Ed25519 public key (hex), or None if signing is disabled.
+
+        Returns the hex-encoded public key of the signer configured via
+        ``MCP_WITNESS_SIGNING_KEY``. If signing is not configured, returns
+        ``None`` for backward compatibility.
+        """
+        ...
+
     # ── Anchoring ────────────────────────────────────────────────────────
 
     @abstractmethod
