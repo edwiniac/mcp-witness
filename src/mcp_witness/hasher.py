@@ -1,6 +1,7 @@
 """Cryptographic hashing and chain integrity for mcp-witness."""
 
 import hashlib
+import hmac
 import json
 from datetime import datetime
 from typing import Any, Optional
@@ -45,6 +46,7 @@ def compute_record_hash(
     input_hash: str,
     output_hash: str,
     tool_name: Optional[str] = None,
+    hmac_key: Optional[bytes] = None,
 ) -> str:
     """
     Compute the hash of a witness record.
@@ -58,6 +60,10 @@ def compute_record_hash(
     - Input/output hashes (what)
     - Tool name (which tool)
 
+    When an ``hmac_key`` is provided, HMAC-SHA256 is used instead of plain
+    SHA-256, making the hash chain depend on a server-side secret. This
+    prevents an attacker with DB read access from recomputing valid hashes.
+
     Args:
         prev_hash: Hash of the previous record in the chain
         sequence: Monotonic sequence number
@@ -67,9 +73,10 @@ def compute_record_hash(
         input_hash: SHA-256 of input data
         output_hash: SHA-256 of output data
         tool_name: Optional name of the tool called
+        hmac_key: Optional HMAC key for server-secret-protected hashing
 
     Returns:
-        Hex-encoded SHA-256 hash of the record
+        Hex-encoded SHA-256 (or HMAC-SHA256) hash of the record
     """
     components = [
         prev_hash,
@@ -84,6 +91,9 @@ def compute_record_hash(
 
     # Join with a delimiter that won't appear in the data
     payload = "|".join(components)
+
+    if hmac_key is not None:
+        return hmac.new(hmac_key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -97,12 +107,17 @@ def verify_record_hash(
     input_hash: str,
     output_hash: str,
     tool_name: Optional[str] = None,
+    hmac_key: Optional[bytes] = None,
 ) -> bool:
     """
     Verify that a record's hash is correct.
 
+    When an ``hmac_key`` is provided, the hash is verified using
+    HMAC-SHA256 with that key; otherwise plain SHA-256 is used.
+
     Args:
         record_hash: The hash to verify
+        hmac_key: Optional HMAC key for server-secret-protected verification
         ... (same as compute_record_hash)
 
     Returns:
@@ -117,6 +132,7 @@ def verify_record_hash(
         input_hash=input_hash,
         output_hash=output_hash,
         tool_name=tool_name,
+        hmac_key=hmac_key,
     )
     return record_hash == expected
 

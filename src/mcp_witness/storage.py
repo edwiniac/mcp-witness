@@ -36,6 +36,7 @@ from .security import (
     check_idempotency,
     check_rate_limit,
     compute_action_fingerprint,
+    get_hmac_key,
     validate_inputs,
 )
 from .storage_base import StorageBackend
@@ -324,6 +325,7 @@ class SqliteStorage(StorageBackend):
                     input_hash=input_hash,
                     output_hash=output_hash,
                     tool_name=tool_name,
+                    hmac_key=get_hmac_key(),
                 )
 
                 await self._db.execute(
@@ -399,6 +401,211 @@ class SqliteStorage(StorageBackend):
         await self._maybe_create_checkpoint(record.sequence)
 
         return record
+
+    async def batch_record(
+        self,
+        records: list[dict],
+    ) -> list[WitnessRecord]:
+        """
+        Batch insert multiple records in a single transaction.
+
+        Each dict in ``records`` must have at least ``action_type``.
+        Other keys follow the same kwargs as ``record()``:
+        ``actor_type``, ``actor_id``, ``session_id``, ``tool_name``,
+        ``input_data``, ``output_data``, ``context``, ``reasoning``,
+        ``confidence``, ``sensitivity``, ``retention_days``,
+        ``redact_fields``.
+
+        The hash chain is maintained sequentially across all records in
+        the batch. Returns created WitnessRecords in the same order.
+
+        Args:
+            records: List of record kwargs dicts
+
+        Returns:
+            List of created WitnessRecords
+        """
+        if not records:
+            return []
+
+        from uuid import uuid4
+
+        from .hasher import redact_fields as do_redact
+
+        # Pre-validate and pre-process all records
+        processed = []
+        hmac_key = get_hmac_key()
+
+        for r_kwargs in records:
+            action_type = r_kwargs["action_type"]
+            actor_type = r_kwargs.get("actor_type", ActorType.AGENT)
+            actor_id = r_kwargs.get("actor_id", "unknown")
+            session_id = r_kwargs.get("session_id", "")
+            tool_name = r_kwargs.get("tool_name")
+            input_data = r_kwargs.get("input_data")
+            output_data = r_kwargs.get("output_data")
+            context = r_kwargs.get("context")
+            reasoning = r_kwargs.get("reasoning")
+            confidence = r_kwargs.get("confidence")
+            sensitivity = r_kwargs.get("sensitivity", Sensitivity.INTERNAL)
+            retention_days = r_kwargs.get("retention_days", 365)
+            redact_fields_list = r_kwargs.get("redact_fields") or []
+
+            # Input validation
+            _validate_session_id(session_id)
+            _validate_payload_size(input_data, "input_data")
+            _validate_payload_size(output_data, "output_data")
+            _validate_payload_size(context, "context")
+            validate_inputs(session_id, actor_id, reasoning)
+
+            # Compute hashes
+            input_hash = hash_data(input_data) if input_data else ""
+            output_hash = hash_data(output_data) if output_data else ""
+            timestamp = datetime.now(timezone.utc)
+
+            # Idempotency check (per record)
+            action_fp = compute_action_fingerprint(
+                action_type=action_type.value,
+                session_id=session_id,
+                input_hash=input_hash,
+                output_hash=output_hash,
+                timestamp=timestamp.isoformat(),
+            )
+            if not check_idempotency(action_fp):
+                raise ValueError(
+                    "Duplicate action detected. "
+                    "Action already recorded recently."
+                )
+
+            # Process redaction
+            processed_input = do_redact(input_data, redact_fields_list) if input_data else None
+            processed_output = do_redact(output_data, redact_fields_list) if output_data else None
+
+            record_id = uuid4()
+
+            processed.append({
+                "action_type": action_type,
+                "actor_type": actor_type,
+                "actor_id": actor_id,
+                "session_id": session_id,
+                "tool_name": tool_name,
+                "processed_input": processed_input,
+                "processed_output": processed_output,
+                "input_hash": input_hash,
+                "output_hash": output_hash,
+                "timestamp": timestamp,
+                "context": context,
+                "reasoning": reasoning,
+                "confidence": confidence,
+                "sensitivity": sensitivity,
+                "retention_days": retention_days,
+                "record_id": record_id,
+                "redact_fields_list": redact_fields_list,
+            })
+
+        # Rate limiting (once for the batch)
+        check_rate_limit()
+
+        async def _do_batch_insert():
+            await self._db.execute("BEGIN IMMEDIATE")
+            try:
+                last_record = await self._get_last_record()
+                prev_hash = last_record["record_hash"] if last_record else GENESIS_HASH
+                sequence = (last_record["sequence"] + 1) if last_record else 0
+
+                result_records = []
+                for rec in processed:
+                    action_type = rec["action_type"]
+                    record_hash = compute_record_hash(
+                        prev_hash=prev_hash,
+                        sequence=sequence,
+                        timestamp=rec["timestamp"],
+                        action_type=action_type.value,
+                        actor_id=rec["actor_id"],
+                        input_hash=rec["input_hash"],
+                        output_hash=rec["output_hash"],
+                        tool_name=rec["tool_name"],
+                        hmac_key=hmac_key,
+                    )
+
+                    await self._db.execute(
+                        """
+                        INSERT INTO witness_records (
+                            id, timestamp, sequence, prev_hash, record_hash,
+                            actor_type, actor_id, session_id,
+                            action_type, tool_name, input_data, output_data,
+                            input_hash, output_hash,
+                            context, reasoning, confidence,
+                            sensitivity, retention_days, tsa_receipt, anchored_at,
+                            redacted_fields
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(rec["record_id"]),
+                            rec["timestamp"].isoformat(),
+                            sequence,
+                            prev_hash,
+                            record_hash,
+                            rec["actor_type"].value,
+                            rec["actor_id"],
+                            rec["session_id"],
+                            action_type.value,
+                            rec["tool_name"],
+                            json.dumps(rec["processed_input"]) if rec["processed_input"] else None,
+                            json.dumps(rec["processed_output"]) if rec["processed_output"] else None,
+                            rec["input_hash"],
+                            rec["output_hash"],
+                            json.dumps(rec["context"]) if rec["context"] else None,
+                            rec["reasoning"],
+                            rec["confidence"],
+                            rec["sensitivity"].value,
+                            rec["retention_days"],
+                            None,  # tsa_receipt
+                            None,  # anchored_at
+                            json.dumps(rec["redact_fields_list"]),
+                        )
+                    )
+
+                    record = WitnessRecord(
+                        id=rec["record_id"],
+                        timestamp=rec["timestamp"],
+                        sequence=sequence,
+                        prev_hash=prev_hash,
+                        record_hash=record_hash,
+                        actor_type=rec["actor_type"],
+                        actor_id=rec["actor_id"],
+                        session_id=rec["session_id"],
+                        action_type=action_type,
+                        tool_name=rec["tool_name"],
+                        input_data=rec["processed_input"],
+                        output_data=rec["processed_output"],
+                        input_hash=rec["input_hash"],
+                        output_hash=rec["output_hash"],
+                        context=rec["context"],
+                        reasoning=rec["reasoning"],
+                        confidence=rec["confidence"],
+                        sensitivity=rec["sensitivity"],
+                        retention_days=rec["retention_days"],
+                        redacted_fields=rec["redact_fields_list"],
+                    )
+                    result_records.append(record)
+
+                    prev_hash = record_hash
+                    sequence += 1
+
+                await self._db.commit()
+                return result_records
+            except Exception:
+                await self._db.execute("ROLLBACK")
+                raise
+
+        result_records = await self._retry_on_busy(_do_batch_insert)
+
+        # Create checkpoints (outside the transaction)
+        for rec in result_records:
+            await self._maybe_create_checkpoint(rec.sequence)
+
+        return result_records
 
     async def get_by_id(self, record_id: str | UUID) -> Optional[WitnessRecord]:
         """Get a record by its ID."""
@@ -542,6 +749,7 @@ class SqliteStorage(StorageBackend):
                 input_hash=record.input_hash,
                 output_hash=record.output_hash,
                 tool_name=record.tool_name,
+                hmac_key=get_hmac_key(),
             )
 
             if record.record_hash != expected_hash:

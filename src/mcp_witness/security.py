@@ -20,6 +20,44 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# HMAC Key for Hash Chain Protection
+# ---------------------------------------------------------------------------
+
+# HMAC key state: ``None`` = no key (plain SHA-256 mode), sentinel = uninitialised
+_HMAC_KEY_UNSET = object()
+_hmac_key: object = _HMAC_KEY_UNSET
+
+
+def get_hmac_key() -> Optional[bytes]:
+    """Get the HMAC key for hash chain protection.
+
+    Reads from the ``MCP_WITNESS_HMAC_KEY`` environment variable.
+    When set, the value must be a hex-encoded 32-byte (64 hex char) key.
+    When NOT set, returns ``None`` for backward-compatible plain SHA-256 mode.
+
+    The key is resolved ONCE per process lifetime (module-level lazy singleton).
+
+    Returns:
+        The HMAC key bytes, or ``None`` if no key is configured.
+    """
+    global _hmac_key
+    if _hmac_key is not _HMAC_KEY_UNSET:
+        return _hmac_key
+
+    env_key = os.getenv("MCP_WITNESS_HMAC_KEY", "").strip()
+    if env_key:
+        _hmac_key = bytes.fromhex(env_key)
+        if len(_hmac_key) != 32:
+            raise ValueError(
+                f"MCP_WITNESS_HMAC_KEY must be 32 bytes hex-encoded, got {len(_hmac_key)} bytes"
+            )
+    else:
+        _hmac_key = None
+
+    return _hmac_key
+
+
+# ---------------------------------------------------------------------------
 # Rate Limiting
 # ---------------------------------------------------------------------------
 

@@ -72,6 +72,28 @@ class StorageBackend(ABC):
         ...
 
     @abstractmethod
+    async def batch_record(
+        self,
+        records: list[dict],
+    ) -> list[WitnessRecord]:
+        """
+        Batch insert multiple records in a single transaction.
+
+        Each dict in ``records`` must have at least ``action_type``.
+        Other keys follow the same kwargs as ``record()``.
+
+        The hash chain must be maintained sequentially across all records
+        in the batch. Returns created WitnessRecords in the same order.
+
+        Args:
+            records: List of record kwargs dicts
+
+        Returns:
+            List of created WitnessRecords
+        """
+        ...
+
+    @abstractmethod
     async def get_by_id(self, record_id: str | UUID) -> Optional[WitnessRecord]:
         """Get a record by its ID."""
         ...

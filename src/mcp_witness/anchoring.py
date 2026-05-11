@@ -11,6 +11,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -19,6 +20,8 @@ from enum import Enum
 from typing import Optional
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Multihash / CID helpers for proper IPFS content addressing
@@ -161,6 +164,44 @@ _ASN1_OCTET = 0x04
 _ASN1_OID = 0x06
 _ASN1_NULL = 0x05
 _ASN1_SEQUENCE = 0x30
+
+
+def _der_decode_length(data: bytes, offset: int) -> tuple[int, int]:
+    """Decode a DER length value at the given offset.
+
+    Supports both short form (< 128) and long form (multi-byte).
+    Indefinite length is not supported.
+
+    Args:
+        data: DER-encoded bytes
+        offset: Position of the length field
+
+    Returns:
+        (length, bytes_consumed)
+
+    Raises:
+        ValueError: if data is truncated or length format is unsupported.
+    """
+    if offset >= len(data):
+        raise ValueError("Truncated DER: length field out of bounds")
+
+    first = data[offset]
+    if first < 0x80:
+        # Short form: length is just the byte value
+        return first, 1
+
+    # Long form
+    num_bytes = first & 0x7F
+    if num_bytes == 0:
+        raise ValueError("Indefinite length not supported")
+    if num_bytes > 8:
+        raise ValueError("Length field too large (> 8 bytes)")
+
+    if offset + 1 + num_bytes > len(data):
+        raise ValueError("Truncated DER: length bytes out of bounds")
+
+    length = int.from_bytes(data[offset + 1:offset + 1 + num_bytes], "big")
+    return length, 1 + num_bytes
 
 
 def _der_length(value: int) -> bytes:
@@ -344,15 +385,65 @@ class TSAProvider(AnchorProvider):
             metadata={"type": "local_attestation"},
         )
 
+    @staticmethod
+    def _validate_der_receipt(raw: bytes) -> bool:
+        """
+        Validate an RFC 3161 TimeStampResp DER structure.
+
+        Parses the outer SEQUENCE tag, verifies the DER length is valid,
+        and checks the body contains at least one inner element (a valid
+        PKIStatusInfo SEQUENCE). Returns True for well-formed DER.
+        """
+        if not raw:
+            return False
+
+        try:
+            # Must start with SEQUENCE tag (0x30)
+            if raw[0] != 0x30:
+                return False
+
+            if len(raw) < 2:
+                return False
+
+            # Parse DER length
+            offset = 1
+            length, consumed = _der_decode_length(raw, offset)
+            offset += consumed
+
+            # Body must be non-zero and fit within the data
+            if length == 0:
+                return False
+
+            if offset + length != len(raw):
+                return False
+
+            # Body must contain at least one inner SEQUENCE (PKIStatusInfo)
+            if offset >= len(raw):
+                return False
+
+            if raw[offset] != 0x30:
+                return False
+
+            return True
+
+        except (ValueError, IndexError):
+            return False
+
     async def verify(self, receipt: AnchorReceipt) -> bool:
         """
         Verify a TSA receipt.
 
-        For RFC 3161 receipts: checks structure + re-verifies with TSA if possible.
+        For RFC 3161 receipts: validates DER structure by parsing the
+        SEQUENCE tag, DER length, and verifying the body is non-empty
+        and contains a valid PKIStatusInfo SEQUENCE.
+
         For local attestations: verifies the merkle_root matches.
 
         Full certificate-chain verification requires pyasn1+cryptography
         (see pyproject.toml [project.optional-dependencies].tsa).
+
+        Returns:
+            True if the receipt is structurally valid, False otherwise.
         """
         if not receipt.raw_receipt:
             return False
@@ -365,12 +456,8 @@ class TSAProvider(AnchorProvider):
             except (json.JSONDecodeError, UnicodeDecodeError):
                 return False
 
-        # RFC 3161 receipt: has DER structure, basic validation
-        # A proper TimeStampResp starts with SEQUENCE tag (0x30)
-        if receipt.raw_receipt[0:1] == bytes([0x30]):
-            return True  # Well-formed DER TimeStampResp
-
-        return False
+        # RFC 3161 receipt: validate full DER structure
+        return self._validate_der_receipt(receipt.raw_receipt)
 
 
 class OpenTimestampsProvider(AnchorProvider):
@@ -438,13 +525,109 @@ class OpenTimestampsProvider(AnchorProvider):
         # All servers failed
         raise Exception("All OpenTimestamps servers failed")
 
+    @staticmethod
+    def _ots_parse_varint(data: bytes, offset: int) -> tuple[int, int]:
+        """Parse an OTS variable-length integer at offset.
+
+        OTS uses the same varint encoding as protobuf:
+        7 bits per byte, MSB=1 means more bytes follow.
+
+        Returns:
+            (value, bytes_consumed)
+
+        Raises:
+            ValueError: if data is truncated or varint is malformed.
+        """
+        value = 0
+        i = offset
+        shift = 0
+        while i < len(data):
+            byte = data[i]
+            value |= (byte & 0x7F) << shift
+            i += 1
+            shift += 7
+            if not (byte & 0x80):
+                return value, i - offset
+            if shift > 70:  # prevent runaway (max ~10 bytes for 64-bit)
+                raise ValueError("Varint too long")
+        raise ValueError("Truncated varint")
+
+    @staticmethod
+    def _ots_validate_structure(data: bytes, offset: int, end: int, depth: int = 0) -> bool:
+        """Recursively validate an OTS timestamp binary structure.
+
+        OTS timestamps are serialized as:
+          <tag: 1 byte> <length: varint> <contents>
+
+        Tag 0x00 (timestamp) contains sub-timestamps as contents.
+        Other tags have opaque contents (just validate length).
+
+        Returns:
+            True if the structure is well-formed.
+        """
+        if depth > 16:  # prevent stack overflow on malformed data
+            return False
+
+        pos = offset
+        while pos < end:
+            if pos >= len(data):
+                return False
+
+            tag = data[pos]
+            pos += 1
+
+            if pos >= len(data):
+                return False
+
+            try:
+                length, consumed = OpenTimestampsProvider._ots_parse_varint(data, pos)
+            except ValueError:
+                return False
+            pos += consumed
+
+            if pos + length > end or pos + length > len(data):
+                return False
+
+            # For timestamp type (0x00), validate sub-structures
+            if tag == 0x00 and length > 0:
+                if not OpenTimestampsProvider._ots_validate_structure(
+                    data, pos, pos + length, depth + 1
+                ):
+                    return False
+
+            pos += length
+
+        return True
+
     async def verify(self, receipt: AnchorReceipt) -> bool:
         """
         Verify an OpenTimestamps receipt.
 
-        Full verification requires checking the Bitcoin blockchain.
+        Validates the OTS binary structure:
+        - raw_receipt must not be None or empty
+        - Must start with OTS magic bytes (\x00\x00, a timestamp tag)
+        - Must contain valid varint-encoded sub-timestamp structures
+
+        Full verification (checking against the Bitcoin blockchain) is
+        not performed here — this validates structural integrity only.
+
+        Returns:
+            True if the receipt has a valid OTS structure.
         """
-        return receipt.raw_receipt is not None and len(receipt.raw_receipt) > 0
+        if not receipt.raw_receipt:
+            return False
+
+        raw = receipt.raw_receipt
+        if len(raw) < 2:
+            return False
+
+        # OTS receipts start with magic bytes: \x00\x00
+        # First byte = tag 0 (timestamp), second byte begins varint length
+        if raw[0] != 0x00:
+            return False
+
+        # Parse the top-level timestamp structure
+        return self._ots_validate_structure(raw, 0, len(raw))
 
 
 class IPFSProvider(AnchorProvider):
@@ -532,19 +715,49 @@ class IPFSProvider(AnchorProvider):
         return compute_ipfs_cidv0(content)
 
     async def verify(self, receipt: AnchorReceipt) -> bool:
-        """Verify IPFS content is accessible."""
-        if not receipt.verification_url:
+        """
+        Verify IPFS content integrity.
+
+        Fetches content from the IPFS gateway, computes the CID locally,
+        and compares it with the receipt's CID. Falls back to a HEAD
+        check (confirming accessibility) only if the GET request fails.
+
+        Returns:
+            True if content integrity is verified or if content is
+            confirmed accessible (fallback).
+        """
+        if not receipt.verification_url or not receipt.receipt_id:
             return False
 
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:
-                response = await client.head(
+                # Fetch content from gateway
+                response = await client.get(
                     receipt.verification_url,
                     follow_redirects=True
                 )
-                return response.status_code == 200
+                if response.status_code != 200:
+                    return False
+
+                # Compute CID locally and compare with receipt
+                content = response.content
+                computed_cid = compute_ipfs_cidv0(content)
+                return computed_cid == receipt.receipt_id
+
             except Exception:
-                return False
+                # Fall back to HEAD check with warning
+                logger.warning(
+                    "IPFS fetch failed for %s, falling back to HEAD accessibility check",
+                    receipt.verification_url,
+                )
+                try:
+                    response = await client.head(
+                        receipt.verification_url,
+                        follow_redirects=True
+                    )
+                    return response.status_code == 200
+                except Exception:
+                    return False
 
 
 class AnchorService:

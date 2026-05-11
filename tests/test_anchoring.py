@@ -2,14 +2,22 @@
 
 import hashlib
 import json
+from unittest.mock import AsyncMock, patch
+
+import httpx
+import pytest
 
 from mcp_witness.anchoring import (
     SHA2_256_CODE,
     SHA2_256_LENGTH,
     AnchorReceipt,
     AnchorType,
+    IPFSProvider,
+    OpenTimestampsProvider,
+    TSAProvider,
     _base58_encode,
     _build_tsa_request,
+    _der_decode_length,
     _make_multihash,
     compute_ipfs_cidv0,
     compute_ipfs_cidv1,
@@ -180,3 +188,387 @@ class TestAnchorReceipt:
         assert restored.anchor_type == receipt.anchor_type
         assert restored.merkle_root == receipt.merkle_root
         assert restored.receipt_id == receipt.receipt_id
+
+
+class TestDERDecodeLength:
+    """Tests for DER length decoding."""
+
+    def test_short_form(self):
+        """Short form length (< 128)."""
+        length, consumed = _der_decode_length(b"\x05", 0)
+        assert length == 5
+        assert consumed == 1
+
+    def test_short_form_zero(self):
+        """Short form zero length."""
+        length, consumed = _der_decode_length(b"\x00", 0)
+        assert length == 0
+        assert consumed == 1
+
+    def test_long_form_two_bytes(self):
+        """Long form with 2 length bytes."""
+        length, consumed = _der_decode_length(b"\x82\x01\x00", 0)
+        assert length == 256
+        assert consumed == 3
+
+    def test_long_form_large(self):
+        """Long form with larger value."""
+        length, consumed = _der_decode_length(b"\x83\x10\x00\x01", 0)
+        assert length == 0x100001
+        assert consumed == 4
+
+    def test_truncated_raises(self):
+        """Truncated long form raises ValueError."""
+        with pytest.raises(ValueError, match="out of bounds"):
+            _der_decode_length(b"\x82", 0)
+
+    def test_indefinite_raises(self):
+        """Indefinite length (0x80) raises ValueError."""
+        with pytest.raises(ValueError, match="Indefinite"):
+            _der_decode_length(b"\x80\x00", 0)
+
+
+class TestTSAVerify:
+    """Tests for TSAProvider.verify()."""
+
+    def _make_tsa_receipt(self, raw_receipt: bytes) -> AnchorReceipt:
+        from datetime import datetime, timezone
+        return AnchorReceipt(
+            anchor_type=AnchorType.TSA,
+            merkle_root="abc123",
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            receipt_id="rec_001",
+            raw_receipt=raw_receipt,
+        )
+
+    @pytest.mark.asyncio
+    async def test_verify_none_receipt(self):
+        """None raw_receipt should return False."""
+        provider = TSAProvider()
+        receipt = self._make_tsa_receipt(None)
+        assert not await provider.verify(receipt)
+
+    @pytest.mark.asyncio
+    async def test_verify_empty_receipt(self):
+        """Empty raw_receipt should return False."""
+        provider = TSAProvider()
+        receipt = self._make_tsa_receipt(b"")
+        assert not await provider.verify(receipt)
+
+    @pytest.mark.asyncio
+    async def test_verify_valid_der_sequence(self):
+        """Valid DER SEQUENCE with non-zero body should return True.
+
+        A minimal valid TimeStampResp DER:
+          SEQUENCE (0x30) {
+            SEQUENCE (0x30) {  -- PKIStatusInfo
+              INTEGER (0x02) { 0 }  -- status = granted
+            }
+          }
+        """
+        # Build: SEQUENCE { SEQUENCE { INTEGER 0 } }
+        inner = bytes([0x30, 0x03, 0x02, 0x01, 0x00])
+        raw = bytes([0x30]) + bytes([len(inner)]) + inner
+        provider = TSAProvider()
+        receipt = self._make_tsa_receipt(raw)
+        assert await provider.verify(receipt)
+
+    @pytest.mark.asyncio
+    async def test_verify_local_attestation(self):
+        """Local attestation with matching merkle_root should return True."""
+        provider = TSAProvider()
+        attestation = json.dumps({
+            "version": "mcp-witness-tsa-v1",
+            "merkle_root": "abc123",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+        }, sort_keys=True).encode()
+        receipt = self._make_tsa_receipt(attestation)
+        receipt.receipt_id = "local_test123"
+        assert await provider.verify(receipt)
+
+    @pytest.mark.asyncio
+    async def test_verify_local_attestation_wrong_root(self):
+        """Local attestation with wrong merkle_root should return False."""
+        provider = TSAProvider()
+        attestation = json.dumps({
+            "version": "mcp-witness-tsa-v1",
+            "merkle_root": "wrong_root",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+        }, sort_keys=True).encode()
+        receipt = self._make_tsa_receipt(attestation)
+        receipt.receipt_id = "local_test123"
+        receipt.merkle_root = "abc123"
+        assert not await provider.verify(receipt)
+
+    @pytest.mark.asyncio
+    async def test_verify_invalid_der_not_sequence(self):
+        """DER data not starting with SEQUENCE should return False."""
+        provider = TSAProvider()
+        receipt = self._make_tsa_receipt(b"\x02\x01\x00")  # INTEGER, not SEQUENCE
+        assert not await provider.verify(receipt)
+
+    @pytest.mark.asyncio
+    async def test_verify_der_zero_length_body(self):
+        """SEQUENCE with zero-length body should return False."""
+        provider = TSAProvider()
+        receipt = self._make_tsa_receipt(b"\x30\x00")  # empty SEQUENCE
+        assert not await provider.verify(receipt)
+
+    @pytest.mark.asyncio
+    async def test_validate_der_receipt_rfc_example(self):
+        """_validate_der_receipt properly validates a DER structure.
+
+        Tests the static helper directly for structural validation.
+        """
+        # Valid: SEQUENCE { SEQUENCE { INTEGER 0 } }
+        inner = bytes([0x30, 0x03, 0x02, 0x01, 0x00])
+        raw = bytes([0x30]) + bytes([len(inner)]) + inner
+        assert TSAProvider._validate_der_receipt(raw)
+
+        # Invalid: not SEQUENCE
+        assert not TSAProvider._validate_der_receipt(b"\x02\x01\x00")
+
+        # Invalid: empty
+        assert not TSAProvider._validate_der_receipt(b"")
+
+        # Invalid: None-like (empty)
+        assert not TSAProvider._validate_der_receipt(b"\x30")  # truncated
+
+
+class TestOTSVerify:
+    """Tests for OpenTimestampsProvider.verify()."""
+
+    def _make_ots_receipt(self, raw_receipt: bytes) -> AnchorReceipt:
+        from datetime import datetime, timezone
+        return AnchorReceipt(
+            anchor_type=AnchorType.OPENTIMESTAMPS,
+            merkle_root="abc123",
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            receipt_id="ots_abc123",
+            raw_receipt=raw_receipt,
+        )
+
+    def test_ots_parse_varint_small(self):
+        """Small varint (< 128) parses correctly."""
+        value, consumed = OpenTimestampsProvider._ots_parse_varint(b"\x2a", 0)
+        assert value == 42
+        assert consumed == 1
+
+    def test_ots_parse_varint_multi_byte(self):
+        """Multi-byte varint parses correctly."""
+        # 0x80 | 0x01 = 128 + 1 = 129 in 7-bit chunks = 0x81 0x01
+        value, consumed = OpenTimestampsProvider._ots_parse_varint(b"\x81\x01", 0)
+        assert value == 129
+        assert consumed == 2
+
+    def test_ots_parse_varint_large(self):
+        """Larger varint parses correctly."""
+        # 0xAC 0x02 = (0x2C << 7) | 0x02 = 5632... no
+        # 0xAC = 0b10101100 -> low 7 = 0b0101100 = 44, more = yes
+        # 0x02 = 0b00000010 -> low 7 = 2, more = no
+        # value = 44 | (2 << 7) = 44 + 256 = 300
+        value, consumed = OpenTimestampsProvider._ots_parse_varint(b"\xAC\x02", 0)
+        assert value == 300
+        assert consumed == 2
+
+    def test_ots_parse_varint_truncated(self):
+        """Truncated varint raises ValueError."""
+        with pytest.raises(ValueError):
+            OpenTimestampsProvider._ots_parse_varint(b"\x81", 0)
+
+    @pytest.mark.asyncio
+    async def test_verify_none_receipt(self):
+        """None raw_receipt returns False."""
+        provider = OpenTimestampsProvider()
+        receipt = self._make_ots_receipt(None)
+        assert not await provider.verify(receipt)
+
+    @pytest.mark.asyncio
+    async def test_verify_empty_receipt(self):
+        """Empty raw_receipt returns False."""
+        provider = OpenTimestampsProvider()
+        receipt = self._make_ots_receipt(b"")
+        assert not await provider.verify(receipt)
+
+    @pytest.mark.asyncio
+    async def test_verify_valid_ots_magic_bytes(self):
+        """Receipt starting with OTS magic bytes returns True.
+
+        A minimal OTS receipt: tag=0x00 (timestamp), varint length,
+        empty sub-structure.
+        """
+        # tag=0x00, length=0 (empty timestamp)
+        raw = b"\x00\x00"
+        provider = OpenTimestampsProvider()
+        receipt = self._make_ots_receipt(raw)
+        assert await provider.verify(receipt)
+
+    @pytest.mark.asyncio
+    async def test_verify_valid_ots_with_content(self):
+        """Receipt with valid OTS sub-structures returns True.
+
+        Top-level timestamp containing a sub-timestamp:
+          tag=0x00, varint length=2, sub: tag=0x01, varint length=0
+        """
+        # Top: tag=0x00, length=2, Sub: tag=0x01, length=0
+        raw = b"\x00\x02\x01\x00"
+        provider = OpenTimestampsProvider()
+        receipt = self._make_ots_receipt(raw)
+        assert await provider.verify(receipt)
+
+    @pytest.mark.asyncio
+    async def test_verify_invalid_ots_no_magic(self):
+        """Receipt without OTS magic bytes returns False."""
+        provider = OpenTimestampsProvider()
+        receipt = self._make_ots_receipt(b"\xff\x00random")
+        assert not await provider.verify(receipt)
+
+    @pytest.mark.asyncio
+    async def test_verify_invalid_ots_truncated(self):
+        """Truncated OTS structure returns False."""
+        provider = OpenTimestampsProvider()
+        # Tag says length 5 but only 3 bytes available
+        raw = b"\x00\x05\x01"
+        receipt = self._make_ots_receipt(raw)
+        assert not await provider.verify(receipt)
+
+    @pytest.mark.asyncio
+    async def test_verify_ots_deeply_nested_valid(self):
+        """Deeply nested but valid OTS structure returns True.
+
+        Structure: timestamp( tag=0x00, len=4 ) ->
+                     timestamp( tag=0x00, len=2 ) ->
+                       attestation( tag=0x01, len=0 )
+        """
+        # Outer: tag=0x00, length=4, contains sub-timestamp
+        # Sub:   tag=0x00, length=2, contains attestation
+        # Att:   tag=0x01, length=0
+        raw = b"\x00\x04\x00\x02\x01\x00"
+        provider = OpenTimestampsProvider()
+        receipt = self._make_ots_receipt(raw)
+        assert await provider.verify(receipt)
+
+
+class TestIPFSVerify:
+    """Tests for IPFSProvider.verify()."""
+
+    @pytest.mark.asyncio
+    async def test_verify_no_url(self):
+        """Receipt without verification_url returns False."""
+        from datetime import datetime, timezone
+        provider = IPFSProvider()
+        receipt = AnchorReceipt(
+            anchor_type=AnchorType.IPFS,
+            merkle_root="abc123",
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            receipt_id="QmTest123",
+            verification_url=None,
+        )
+        assert not await provider.verify(receipt)
+
+    @pytest.mark.asyncio
+    async def test_verify_no_receipt_id(self):
+        """Receipt without receipt_id returns False."""
+        from datetime import datetime, timezone
+        provider = IPFSProvider()
+        receipt = AnchorReceipt(
+            anchor_type=AnchorType.IPFS,
+            merkle_root="abc123",
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            receipt_id="",
+            verification_url="https://ipfs.io/ipfs/QmTest123",
+        )
+        assert not await provider.verify(receipt)
+
+    @pytest.mark.asyncio
+    async def test_verify_fetch_success_cid_matches(self):
+        """When content is fetched and CID matches, returns True."""
+        content = json.dumps({"merkle_root": "abc123"}, sort_keys=True).encode()
+        cid = compute_ipfs_cidv0(content)
+
+        from datetime import datetime, timezone
+        provider = IPFSProvider()
+        receipt = AnchorReceipt(
+            anchor_type=AnchorType.IPFS,
+            merkle_root="abc123",
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            receipt_id=cid,
+            verification_url=f"https://ipfs.io/ipfs/{cid}",
+        )
+
+        with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+            mock_response = AsyncMock()
+            mock_response.status_code = 200
+            mock_response.content = content
+            mock_get.return_value = mock_response
+
+            assert await provider.verify(receipt)
+            mock_get.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_verify_fetch_success_cid_mismatch(self):
+        """When fetched content CID doesn't match receipt, returns False."""
+        content = json.dumps({"merkle_root": "different"}, sort_keys=True).encode()
+
+        from datetime import datetime, timezone
+        provider = IPFSProvider()
+        receipt = AnchorReceipt(
+            anchor_type=AnchorType.IPFS,
+            merkle_root="abc123",
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            receipt_id="QmTestDifferent",
+            verification_url="https://ipfs.io/ipfs/QmTestDifferent",
+        )
+
+        with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+            mock_response = AsyncMock()
+            mock_response.status_code = 200
+            mock_response.content = content
+            mock_get.return_value = mock_response
+
+            assert not await provider.verify(receipt)
+
+    @pytest.mark.asyncio
+    async def test_verify_fetch_fails_fallback_to_head(self):
+        """When GET fails, falls back to HEAD accessibility check."""
+        from datetime import datetime, timezone
+        provider = IPFSProvider()
+        receipt = AnchorReceipt(
+            anchor_type=AnchorType.IPFS,
+            merkle_root="abc123",
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            receipt_id="QmTestFallback",
+            verification_url="https://ipfs.io/ipfs/QmTestFallback",
+        )
+
+        with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+            mock_get.side_effect = Exception("Connection failed")
+
+            with patch.object(httpx.AsyncClient, "head", new_callable=AsyncMock) as mock_head:
+                mock_response = AsyncMock()
+                mock_response.status_code = 200
+                mock_head.return_value = mock_response
+
+                assert await provider.verify(receipt)
+                mock_head.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_verify_fetch_fails_head_fails_too(self):
+        """When both GET and HEAD fail, returns False."""
+        from datetime import datetime, timezone
+        provider = IPFSProvider()
+        receipt = AnchorReceipt(
+            anchor_type=AnchorType.IPFS,
+            merkle_root="abc123",
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            receipt_id="QmTestFailAll",
+            verification_url="https://ipfs.io/ipfs/QmTestFailAll",
+        )
+
+        with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+            mock_get.side_effect = Exception("Connection failed")
+
+            with patch.object(httpx.AsyncClient, "head", new_callable=AsyncMock) as mock_head:
+                mock_head.side_effect = Exception("HEAD also failed")
+
+                assert not await provider.verify(receipt)

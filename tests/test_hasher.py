@@ -129,6 +129,78 @@ class TestVerifyRecordHash:
         assert verify_record_hash(record_hash="invalid_hash", **args) is False
 
 
+class TestHMACChainProtection:
+    """Tests for HMAC-based hash chain protection."""
+
+    _test_key = b"this-is-a-32-byte-test-key-123456"  # exactly 32 bytes
+    _wrong_key = b"this-is-a-different-32-byte-key-789a"  # exactly 32 bytes
+
+    def make_args(self):
+        return {
+            "prev_hash": GENESIS_HASH,
+            "sequence": 0,
+            "timestamp": datetime(2026, 3, 1, 12, 0, 0, tzinfo=timezone.utc),
+            "action_type": "tool_call",
+            "actor_id": "test_agent",
+            "input_hash": "abc123",
+            "output_hash": "def456",
+        }
+
+    def test_hmac_produces_different_hash_than_plain(self):
+        """HMAC with a key produces a different hash than plain SHA-256."""
+        args = self.make_args()
+        plain_hash = compute_record_hash(**args)
+        hmac_hash = compute_record_hash(**args, hmac_key=self._test_key)
+        assert len(hmac_hash) == 64
+        assert hmac_hash != plain_hash
+
+    def test_hmac_deterministic_with_same_key(self):
+        """Same key produces same HMAC hash (deterministic)."""
+        args = self.make_args()
+        h1 = compute_record_hash(**args, hmac_key=self._test_key)
+        h2 = compute_record_hash(**args, hmac_key=self._test_key)
+        assert h1 == h2
+
+    def test_hmac_different_key_different_hash(self):
+        """Different HMAC keys produce different hashes for same input."""
+        args = self.make_args()
+        h1 = compute_record_hash(**args, hmac_key=self._test_key)
+        h2 = compute_record_hash(**args, hmac_key=self._wrong_key)
+        assert h1 != h2
+
+    def test_hmac_verify_valid(self):
+        """verify_record_hash returns True when HMAC hash is correct."""
+        args = self.make_args()
+        h = compute_record_hash(**args, hmac_key=self._test_key)
+        assert verify_record_hash(record_hash=h, **args, hmac_key=self._test_key) is True
+
+    def test_hmac_verify_with_wrong_key(self):
+        """verify_record_hash returns False when HMAC key is wrong (forgery detection)."""
+        args = self.make_args()
+        h = compute_record_hash(**args, hmac_key=self._test_key)
+        # Verify with a different key should fail
+        assert verify_record_hash(record_hash=h, **args, hmac_key=self._wrong_key) is False
+
+    def test_hmac_verify_with_no_key_after_keyed(self):
+        """verify without key after keyed creation should fail (backward compat safe)."""
+        args = self.make_args()
+        h = compute_record_hash(**args, hmac_key=self._test_key)
+        # Passing no key (None) should NOT verify a keyed hash
+        assert verify_record_hash(record_hash=h, **args) is False
+
+    def test_plain_verify_still_works_without_key(self):
+        """Backward compat: plain SHA-256 hash verifies fine when no key passed."""
+        args = self.make_args()
+        h = compute_record_hash(**args)  # no hmac_key
+        assert verify_record_hash(record_hash=h, **args) is True  # no hmac_key
+
+    def test_plain_verify_fails_with_key_present(self):
+        """A plain SHA-256 hash should fail verification when a key IS provided."""
+        args = self.make_args()
+        h = compute_record_hash(**args)  # plain SHA-256
+        assert verify_record_hash(record_hash=h, **args, hmac_key=self._test_key) is False
+
+
 class TestChainLink:
     """Tests for chain link verification."""
 

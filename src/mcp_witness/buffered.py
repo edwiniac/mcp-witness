@@ -148,9 +148,10 @@ class BufferedStorage(StorageBackend):
     async def _flush_now(self) -> None:
         """Drain the queue and write all pending records.
 
-        Handles errors gracefully: records that fail to write are logged
-        but not lost (the corresponding futures are completed with the
-        exception, allowing callers to handle failures).
+        Uses the underlying backend's ``batch_record()`` for efficient
+        batch insertion in a single transaction. Handles errors gracefully:
+        records that fail to write are logged and their futures are
+        completed with the exception, allowing callers to handle failures.
         """
         batch: list[_BufferedRecord] = []
 
@@ -167,16 +168,17 @@ class BufferedStorage(StorageBackend):
 
         logger.debug("Flushing %d buffered records", len(batch))
 
-        # Write each record to the underlying backend.
-        # We write individually (not batch insert) to maintain the
-        # hash chain integrity guarantees of the backend.
-        for item in batch:
-            try:
-                record = await self._backend.record(**item.kwargs)
+        # Collect all kwargs and batch-insert in one transaction
+        kwargs_list = [item.kwargs for item in batch]
+        try:
+            records = await self._backend.batch_record(kwargs_list)
+            for item, record in zip(batch, records):
                 item.future.set_result(record)
-            except Exception as e:
-                logger.error("Failed to flush buffered record: %s", e)
-                item.future.set_exception(e)
+        except Exception as e:
+            logger.error("Failed to flush buffered records: %s", e)
+            for item in batch:
+                if not item.future.done():
+                    item.future.set_exception(e)
 
     # ------------------------------------------------------------------
     # Record (buffered)
@@ -231,6 +233,13 @@ class BufferedStorage(StorageBackend):
     #
     # These delegate directly to the underlying backend without buffering.
     # ------------------------------------------------------------------
+
+    async def batch_record(
+        self,
+        records: list[dict],
+    ) -> list[WitnessRecord]:
+        """Batch-insert multiple records via the underlying backend."""
+        return await self._backend.batch_record(records)
 
     async def get_by_id(self, record_id: str | UUID) -> Optional[WitnessRecord]:
         return await self._backend.get_by_id(record_id)

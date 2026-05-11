@@ -16,6 +16,15 @@ LEAF_PREFIX = b"\x00"
 NODE_PREFIX = b"\x01"
 
 
+# Zero-leaf constant for Merkle tree padding.
+# Used instead of duplicating the last leaf when padding to a power of 2.
+# This prevents collision attacks where two different record sets with
+# trailing duplicates produce the same Merkle root.
+MERKLE_ZERO_LEAF = hashlib.sha256(
+    LEAF_PREFIX + b"MCP_WITNESS_MERKLE_NULL_V1"
+).hexdigest()
+
+
 def hash_leaf(data: str) -> str:
     """Hash a leaf node (single record hash). Prepends 0x00 prefix."""
     return hashlib.sha256(LEAF_PREFIX + data.encode()).hexdigest()
@@ -96,8 +105,9 @@ def build_merkle_tree(record_hashes: list[str]) -> MerkleTree:
     while next_pow2 < n:
         next_pow2 *= 2
 
-    # Duplicate last domain-separated leaf to pad
-    leaves = domain_separated_leaves + [domain_separated_leaves[-1]] * (next_pow2 - n)
+    # Pad with zero leaves (not duplicate last leaf) to prevent
+    # collision attacks where trailing duplicates produce same root
+    leaves = domain_separated_leaves + [MERKLE_ZERO_LEAF] * (next_pow2 - n)
 
     levels = [leaves]
     current = leaves

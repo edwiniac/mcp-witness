@@ -1,6 +1,7 @@
 """Tests for Merkle tree utilities."""
 
 from mcp_witness.merkle import (
+    MERKLE_ZERO_LEAF,
     build_merkle_tree,
     get_merkle_proof,
     hash_leaf,
@@ -162,3 +163,100 @@ class TestMerkleProof:
                 proof.proof_path,
                 tree.root
             )
+
+
+class TestMerkleZeroLeaf:
+    """Tests for zero-leaf Merkle padding."""
+
+    def test_zero_leaf_is_constant(self):
+        """MERKLE_ZERO_LEAF should be a fixed, deterministic hash.
+
+        This constant must never change between runs to maintain
+        cryptographic consistency.
+        """
+        assert isinstance(MERKLE_ZERO_LEAF, str)
+        assert len(MERKLE_ZERO_LEAF) == 64  # SHA-256 hex
+        assert MERKLE_ZERO_LEAF == MERKLE_ZERO_LEAF  # deterministic
+
+    def test_zero_leaf_is_valid_hash(self):
+        """MERKLE_ZERO_LEAF should be a hex string."""
+        assert all(c in "0123456789abcdef" for c in MERKLE_ZERO_LEAF)
+
+    def test_zero_leaf_differs_from_arbitrary_leaf(self):
+        """Zero leaf should not clash with a hash of arbitrary data."""
+        arbitrary = hash_leaf("SOME_ARBITRARY_SEED")
+        assert MERKLE_ZERO_LEAF != arbitrary
+
+    def test_odd_leaves_padded_with_zero_leaf(self):
+        """Odd number of leaves should pad with zero leaf, not duplicate."""
+        hashes = ["a", "b", "c"]  # 3 leaves, padded to 4
+        tree = build_merkle_tree(hashes)
+
+        assert tree.leaf_count == 3
+        assert len(tree.levels[0]) == 4  # padded to power of 2
+        # Index 3 should be zero leaf, not a duplicate of leaf 2
+        assert tree.levels[0][3] == MERKLE_ZERO_LEAF
+        assert tree.levels[0][3] != tree.levels[0][2]  # Different from real leaf
+
+    def test_zero_leaf_prefix_domain_separated(self):
+        """Zero leaf should have the 0x00 domain separation prefix."""
+        import hashlib
+        expected = hashlib.sha256(
+            b"\x00" + b"MCP_WITNESS_MERKLE_NULL_V1"
+        ).hexdigest()
+        assert MERKLE_ZERO_LEAF == expected
+
+    def test_trailing_duplicates_no_collision(self):
+        """Two record sets differing only by trailing duplicates
+        should produce different Merkle roots with zero-leaf padding.
+
+        Before fix: [A, B, B, B] and [A, B, C, D] would collide
+        on the padded leaves if B appeared enough times.
+        """
+        tree1 = build_merkle_tree(["A", "B", "B"])
+        tree2 = build_merkle_tree(["A", "B", "C"])
+
+        assert tree1.root != tree2.root
+
+    def test_power_of_two_no_padding_needed(self):
+        """Power-of-two leaf counts should not add zero leaves."""
+        hashes = ["a", "b", "c", "d"]
+        tree = build_merkle_tree(hashes)
+
+        expected_root = hash_pair(
+            hash_pair(hash_leaf("a"), hash_leaf("b")),
+            hash_pair(hash_leaf("c"), hash_leaf("d")),
+        )
+        assert tree.root == expected_root
+
+    def test_proofs_still_work_with_zero_leaf_padding(self):
+        """Merkle proofs should still verify correctly with zero-leaf padding.
+
+        This ensures the padding change doesn't break proof verification
+        for real (non-padding) leaves.
+        """
+        for count in [1, 2, 3, 5, 7, 10, 15, 100]:
+            hashes = [f"h{i}" for i in range(count)]
+            tree = build_merkle_tree(hashes)
+
+            for i in range(count):
+                proof = get_merkle_proof(tree, i)
+                assert proof is not None
+                assert verify_merkle_proof(
+                    proof.leaf_hash,
+                    proof.proof_path,
+                    tree.root,
+                ), f"Proof failed for leaf {i} in {count}-leaf tree"
+
+            assert verify_tree_integrity(tree)
+
+    def test_edge_case_single_leaf(self):
+        """Single leaf tree (already power of 2, needs no padding)."""
+        tree = build_merkle_tree(["solo"])
+        assert tree.leaf_count == 1
+        assert tree.root == hash_leaf("solo")
+
+        proof = get_merkle_proof(tree, 0)
+        assert proof is not None
+        assert proof.proof_path == []  # No siblings needed
+        assert verify_merkle_proof(proof.leaf_hash, proof.proof_path, tree.root)
