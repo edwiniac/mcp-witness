@@ -1,21 +1,20 @@
 """Shared test fixtures for mcp-witness."""
 
-import os
 import tempfile
 from pathlib import Path
 
 import pytest
 import pytest_asyncio
 
-from mcp_witness.storage import WitnessStorage
+from mcp_witness.storage import SqliteStorage
 
 
 @pytest_asyncio.fixture
 async def temp_storage():
-    """Create a temporary storage instance for testing."""
+    """Create a temporary SQLite storage instance for testing."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test_witness.db"
-        storage = WitnessStorage(db_path)
+        storage = SqliteStorage(db_path)
         await storage.connect()
         yield storage
         await storage.close()

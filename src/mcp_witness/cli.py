@@ -157,8 +157,8 @@ def cmd_stats(args):
 
 def cmd_export(args):
     """Export audit records."""
-    from .storage import WitnessStorage
     from .security import validate_export_path
+    from .storage import WitnessStorage
 
     store = WitnessStorage(Path(_get_db_path(args)))
 
@@ -266,8 +266,8 @@ def cmd_checkpoints(args):
 
 def cmd_anchors(args):
     """Manage external anchors."""
-    from .storage import WitnessStorage
     from .anchoring import AnchorType
+    from .storage import WitnessStorage
 
     store = WitnessStorage(Path(_get_db_path(args)))
 

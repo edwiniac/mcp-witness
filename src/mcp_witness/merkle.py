@@ -30,18 +30,18 @@ def hash_pair(left: str, right: str) -> str:
 @dataclass
 class MerkleTree:
     """A Merkle tree built from record hashes."""
-    
+
     root: str
     levels: list[list[str]]
     leaf_count: int
-    
+
     def to_dict(self) -> dict:
         return {
             "root": self.root,
             "levels": self.levels,
             "leaf_count": self.leaf_count,
         }
-    
+
     @classmethod
     def from_dict(cls, data: dict) -> "MerkleTree":
         return cls(
@@ -54,12 +54,12 @@ class MerkleTree:
 @dataclass
 class MerkleProof:
     """Proof that a leaf belongs to a Merkle tree."""
-    
+
     leaf_hash: str
     leaf_index: int
     proof_path: list[dict]  # [{"hash": "...", "position": "left"|"right"}, ...]
     root: str
-    
+
     def to_dict(self) -> dict:
         return {
             "leaf_hash": self.leaf_hash,
@@ -101,7 +101,7 @@ def build_merkle_tree(record_hashes: list[str]) -> MerkleTree:
 
     levels = [leaves]
     current = leaves
-    
+
     while len(current) > 1:
         next_level = []
         for i in range(0, len(current), 2):
@@ -110,7 +110,7 @@ def build_merkle_tree(record_hashes: list[str]) -> MerkleTree:
             next_level.append(hash_pair(left, right))
         levels.append(next_level)
         current = next_level
-    
+
     return MerkleTree(
         root=current[0] if current else "",
         levels=levels,
@@ -121,31 +121,31 @@ def build_merkle_tree(record_hashes: list[str]) -> MerkleTree:
 def get_merkle_proof(tree: MerkleTree, index: int) -> Optional[MerkleProof]:
     """
     Get the proof path for a leaf at given index.
-    
+
     Args:
         tree: The Merkle tree
         index: Index of the leaf to prove
-    
+
     Returns:
         MerkleProof with the path from leaf to root
     """
     if not tree.levels or index < 0 or index >= tree.leaf_count:
         return None
-    
+
     proof_path = []
     idx = index
-    
+
     for level in tree.levels[:-1]:  # Exclude root level
         sibling_idx = idx ^ 1  # XOR to get sibling index
-        
+
         if sibling_idx < len(level):
             proof_path.append({
                 "hash": level[sibling_idx],
                 "position": "right" if idx % 2 == 0 else "left"
             })
-        
+
         idx //= 2
-    
+
     return MerkleProof(
         leaf_hash=tree.levels[0][index],
         leaf_index=index,
@@ -161,17 +161,17 @@ def verify_merkle_proof(
 ) -> bool:
     """
     Verify that a leaf belongs to a tree with the given root.
-    
+
     Args:
         leaf_hash: The hash of the leaf to verify
         proof_path: The proof path from get_merkle_proof
         expected_root: The expected Merkle root
-    
+
     Returns:
         True if the proof is valid
     """
     current = leaf_hash
-    
+
     for step in proof_path:
         sibling = step["hash"]
         if step["position"] == "right":
@@ -180,36 +180,36 @@ def verify_merkle_proof(
         else:
             # Sibling is on the left, we're on the right
             current = hash_pair(sibling, current)
-    
+
     return current == expected_root
 
 
 def verify_tree_integrity(tree: MerkleTree) -> bool:
     """
     Verify that a Merkle tree's internal structure is consistent.
-    
+
     Args:
         tree: The tree to verify
-    
+
     Returns:
         True if all internal hashes are correct
     """
     if not tree.levels:
         return tree.root == ""
-    
+
     # Verify each level computes to the next
     for i in range(len(tree.levels) - 1):
         current = tree.levels[i]
         expected_next = tree.levels[i + 1]
-        
+
         computed_next = []
         for j in range(0, len(current), 2):
             left = current[j]
             right = current[j + 1] if j + 1 < len(current) else current[j]
             computed_next.append(hash_pair(left, right))
-        
+
         if computed_next != expected_next:
             return False
-    
+
     # Verify root
     return tree.levels[-1] == [tree.root]

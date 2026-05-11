@@ -2,18 +2,17 @@
 
 import hashlib
 import json
-import pytest
 
 from mcp_witness.anchoring import (
-    compute_ipfs_cidv0,
-    compute_ipfs_cidv1,
-    _build_tsa_request,
-    _base58_encode,
-    _make_multihash,
     SHA2_256_CODE,
     SHA2_256_LENGTH,
-    AnchorType,
     AnchorReceipt,
+    AnchorType,
+    _base58_encode,
+    _build_tsa_request,
+    _make_multihash,
+    compute_ipfs_cidv0,
+    compute_ipfs_cidv1,
 )
 
 

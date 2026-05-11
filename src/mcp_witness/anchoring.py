@@ -90,7 +90,7 @@ class AnchorType(str, Enum):
 @dataclass
 class AnchorReceipt:
     """Proof that data was anchored to an external source."""
-    
+
     anchor_type: AnchorType
     merkle_root: str
     timestamp: datetime
@@ -99,7 +99,7 @@ class AnchorReceipt:
     raw_receipt: Optional[bytes] = None
     cost_usd: float = 0.0
     metadata: dict = field(default_factory=dict)
-    
+
     def to_dict(self) -> dict:
         return {
             "anchor_type": self.anchor_type.value,
@@ -110,7 +110,7 @@ class AnchorReceipt:
             "cost_usd": self.cost_usd,
             "metadata": self.metadata,
         }
-    
+
     @classmethod
     def from_dict(cls, data: dict) -> "AnchorReceipt":
         return cls(
@@ -127,22 +127,22 @@ class AnchorReceipt:
 
 class AnchorProvider(ABC):
     """Base class for anchor providers."""
-    
+
     @property
     @abstractmethod
     def anchor_type(self) -> AnchorType:
         pass
-    
+
     @property
     @abstractmethod
     def name(self) -> str:
         pass
-    
+
     @abstractmethod
     async def anchor(self, merkle_root: str, metadata: dict) -> AnchorReceipt:
         """Anchor a Merkle root and return a receipt."""
         pass
-    
+
     @abstractmethod
     async def verify(self, receipt: AnchorReceipt) -> bool:
         """Verify an anchor receipt is valid."""
@@ -376,38 +376,38 @@ class TSAProvider(AnchorProvider):
 class OpenTimestampsProvider(AnchorProvider):
     """
     OpenTimestamps provider for free Bitcoin anchoring.
-    
+
     Batches many hashes into a single Bitcoin transaction.
     Provides Bitcoin-level immutability at zero cost.
     """
-    
+
     OTS_SERVERS = [
         "https://a.pool.opentimestamps.org",
         "https://b.pool.opentimestamps.org",
         "https://a.pool.eternitywall.com",
     ]
-    
+
     def __init__(self, timeout: float = 30.0):
         self.timeout = timeout
-    
+
     @property
     def anchor_type(self) -> AnchorType:
         return AnchorType.OPENTIMESTAMPS
-    
+
     @property
     def name(self) -> str:
         return "OpenTimestamps (Bitcoin)"
-    
+
     async def anchor(self, merkle_root: str, metadata: dict) -> AnchorReceipt:
         """
         Submit hash to OpenTimestamps for Bitcoin anchoring.
-        
+
         Note: The actual Bitcoin anchoring happens asynchronously
         (usually within a few hours). The receipt can be upgraded later.
         """
         timestamp = datetime.now(timezone.utc)
         hash_bytes = bytes.fromhex(merkle_root)
-        
+
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             for server in self.OTS_SERVERS:
                 try:
@@ -416,7 +416,7 @@ class OpenTimestampsProvider(AnchorProvider):
                         content=hash_bytes,
                         headers={"Content-Type": "application/octet-stream"}
                     )
-                    
+
                     if response.status_code == 200:
                         return AnchorReceipt(
                             anchor_type=AnchorType.OPENTIMESTAMPS,
@@ -434,14 +434,14 @@ class OpenTimestampsProvider(AnchorProvider):
                         )
                 except Exception:
                     continue
-        
+
         # All servers failed
         raise Exception("All OpenTimestamps servers failed")
-    
+
     async def verify(self, receipt: AnchorReceipt) -> bool:
         """
         Verify an OpenTimestamps receipt.
-        
+
         Full verification requires checking the Bitcoin blockchain.
         """
         return receipt.raw_receipt is not None and len(receipt.raw_receipt) > 0
@@ -450,11 +450,11 @@ class OpenTimestampsProvider(AnchorProvider):
 class IPFSProvider(AnchorProvider):
     """
     IPFS anchoring provider.
-    
+
     Content-addressed storage - the CID cryptographically proves the content.
     Free, but doesn't provide timestamps (combine with TSA).
     """
-    
+
     def __init__(
         self,
         api_key: str = None,
@@ -464,32 +464,32 @@ class IPFSProvider(AnchorProvider):
         self.api_key = api_key or os.getenv("PINATA_API_KEY")
         self.api_secret = api_secret or os.getenv("PINATA_API_SECRET")
         self.timeout = timeout
-    
+
     @property
     def anchor_type(self) -> AnchorType:
         return AnchorType.IPFS
-    
+
     @property
     def name(self) -> str:
         return "IPFS"
-    
+
     async def anchor(self, merkle_root: str, metadata: dict) -> AnchorReceipt:
         """Pin anchor data to IPFS."""
         timestamp = datetime.now(timezone.utc)
-        
+
         anchor_data = {
             "version": "mcp-witness-ipfs-v1",
             "merkle_root": merkle_root,
             "timestamp": timestamp.isoformat(),
             "metadata": metadata,
         }
-        
+
         if self.api_key and self.api_secret:
             cid = await self._pin_to_pinata(anchor_data)
         else:
             # Compute CID locally (content is provable even without pinning)
             cid = self._compute_cid(anchor_data)
-        
+
         return AnchorReceipt(
             anchor_type=AnchorType.IPFS,
             merkle_root=merkle_root,
@@ -499,7 +499,7 @@ class IPFSProvider(AnchorProvider):
             cost_usd=0.0,
             metadata={"pinned": bool(self.api_key)},
         )
-    
+
     async def _pin_to_pinata(self, data: dict) -> str:
         """Pin JSON data to Pinata."""
         async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -515,12 +515,12 @@ class IPFSProvider(AnchorProvider):
                     "Content-Type": "application/json",
                 }
             )
-            
+
             if response.status_code == 200:
                 return response.json()["IpfsHash"]
             else:
                 raise Exception(f"Pinata returned {response.status_code}")
-    
+
     def _compute_cid(self, data: dict) -> str:
         """
         Compute a proper IPFS CIDv0 locally without pinning.
@@ -530,12 +530,12 @@ class IPFSProvider(AnchorProvider):
         """
         content = json.dumps(data, sort_keys=True).encode()
         return compute_ipfs_cidv0(content)
-    
+
     async def verify(self, receipt: AnchorReceipt) -> bool:
         """Verify IPFS content is accessible."""
         if not receipt.verification_url:
             return False
-        
+
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:
                 response = await client.head(
@@ -550,14 +550,14 @@ class IPFSProvider(AnchorProvider):
 class AnchorService:
     """
     Multi-anchor service for MCP-Witness.
-    
+
     Anchors Merkle roots to multiple external sources for redundancy.
     """
-    
+
     def __init__(self, providers: list[AnchorProvider] = None):
         """
         Initialize with providers.
-        
+
         Default providers: TSA + OpenTimestamps + IPFS
         """
         if providers is None:
@@ -567,15 +567,15 @@ class AnchorService:
                 IPFSProvider(),
             ]
         self.providers = {p.anchor_type: p for p in providers}
-    
+
     def add_provider(self, provider: AnchorProvider) -> None:
         """Add an anchor provider."""
         self.providers[provider.anchor_type] = provider
-    
+
     def get_provider(self, anchor_type: AnchorType) -> Optional[AnchorProvider]:
         """Get a provider by type."""
         return self.providers.get(anchor_type)
-    
+
     async def anchor(
         self,
         merkle_root: str,
@@ -584,28 +584,28 @@ class AnchorService:
     ) -> list[AnchorReceipt]:
         """
         Anchor a Merkle root to configured providers.
-        
+
         Args:
             merkle_root: The hash to anchor
             metadata: Additional context (record count, time range, etc.)
             anchor_types: Limit to specific providers (default: all)
-        
+
         Returns:
             List of receipts from successful anchors
         """
         metadata = metadata or {}
-        
+
         providers = list(self.providers.values())
         if anchor_types:
             providers = [p for p in providers if p.anchor_type in anchor_types]
-        
+
         # Anchor to all providers concurrently
         tasks = [p.anchor(merkle_root, metadata) for p in providers]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        
+
         receipts = []
         errors = []
-        
+
         for provider, result in zip(providers, results):
             if isinstance(result, Exception):
                 errors.append({
@@ -614,17 +614,17 @@ class AnchorService:
                 })
             else:
                 receipts.append(result)
-        
+
         # Return what we have (some providers may have failed)
         return receipts
-    
+
     async def verify(self, receipt: AnchorReceipt) -> bool:
         """Verify an anchor receipt."""
         provider = self.providers.get(receipt.anchor_type)
         if not provider:
             return False
         return await provider.verify(receipt)
-    
+
     async def verify_all(self, receipts: list[AnchorReceipt]) -> dict[str, bool]:
         """Verify multiple receipts."""
         results = {}

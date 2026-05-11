@@ -15,35 +15,63 @@ from uuid import uuid4
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.types import TextContent, Tool
 
 from .models import (
     ActionType,
     ActorType,
     Sensitivity,
 )
-from .storage import WitnessStorage
 from .security import (
     enforce_read_only,
     sanitize_error,
     validate_export_path,
 )
+from .storage import SqliteStorage
+from .storage_base import StorageBackend
 
 # Initialize MCP server
 server = Server("mcp-witness")
 
 # Global storage instance (initialized on startup)
-storage: Optional[WitnessStorage] = None
+storage: Optional[StorageBackend] = None
 
 # Default database path
 DEFAULT_DB_PATH = os.getenv("MCP_WITNESS_DB", "~/.mcp-witness/witness.db")
 
+# Backend selection: "sqlite" (default) or "postgresql"
+MCP_WITNESS_BACKEND = os.getenv("MCP_WITNESS_BACKEND", "sqlite").lower()
+# PostgreSQL connection URL (required when backend is postgresql)
+MCP_WITNESS_PG_URL = os.getenv("MCP_WITNESS_PG_URL", "")
 
-async def get_storage() -> WitnessStorage:
-    """Get or create the storage instance."""
+
+def _create_storage() -> StorageBackend:
+    """Factory: create the configured storage backend.
+
+    Returns the appropriate StorageBackend implementation based on
+    MCP_WITNESS_BACKEND environment variable.
+    """
+    if MCP_WITNESS_BACKEND == "postgresql":
+        if not MCP_WITNESS_PG_URL:
+            raise ValueError(
+                "MCP_WITNESS_BACKEND=postgresql requires MCP_WITNESS_PG_URL to be set"
+            )
+        try:
+            from .storage_pg import PgStorage
+            return PgStorage(MCP_WITNESS_PG_URL)
+        except ImportError as e:
+            raise ImportError(
+                "PostgreSQL backend requires asyncpg. Install with: pip install mcp-witness[postgres]"
+            ) from e
+    else:
+        return SqliteStorage(DEFAULT_DB_PATH)
+
+
+async def get_storage() -> StorageBackend:
+    """Get or create the storage instance (lazy singleton)."""
     global storage
     if storage is None:
-        storage = WitnessStorage(DEFAULT_DB_PATH)
+        storage = _create_storage()
         await storage.connect()
     return storage
 
@@ -395,7 +423,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         enforce_read_only(name)
 
         store = await get_storage()
-        
+
         if name == "witness_record":
             result = await handle_record(store, arguments)
         elif name == "witness_verify":
@@ -427,19 +455,19 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await handle_compliance(store, arguments)
         else:
             result = {"error": f"Unknown tool: {name}"}
-        
+
         return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
-    
+
     except Exception as e:
         # Sanitize errors: never leak stack traces to the client
         safe = sanitize_error(e)
         return [TextContent(type="text", text=json.dumps(safe, indent=2))]
 
 
-async def handle_record(store: WitnessStorage, args: dict) -> dict:
+async def handle_record(store: StorageBackend, args: dict) -> dict:
     """Handle witness_record tool call."""
     action_type = ActionType(args["action_type"])
-    
+
     record = await store.record(
         action_type=action_type,
         actor_type=ActorType(args.get("actor_type", "agent")),
@@ -455,7 +483,7 @@ async def handle_record(store: WitnessStorage, args: dict) -> dict:
         retention_days=args.get("retention_days", 365),
         redact_fields=args.get("redact_fields"),
     )
-    
+
     return {
         "recorded": True,
         "record_id": str(record.id),
@@ -466,17 +494,17 @@ async def handle_record(store: WitnessStorage, args: dict) -> dict:
     }
 
 
-async def handle_verify(store: WitnessStorage, args: dict) -> dict:
+async def handle_verify(store: StorageBackend, args: dict) -> dict:
     """Handle witness_verify tool call."""
     from_seq = args.get("from_sequence")
     to_seq = args.get("to_sequence")
-    
+
     if args.get("full_chain"):
         from_seq = None
         to_seq = None
-    
+
     result = await store.verify_chain(from_sequence=from_seq, to_sequence=to_seq)
-    
+
     return {
         "valid": result.valid,
         "records_checked": result.records_checked,
@@ -487,19 +515,19 @@ async def handle_verify(store: WitnessStorage, args: dict) -> dict:
     }
 
 
-async def handle_query(store: WitnessStorage, args: dict) -> dict:
+async def handle_query(store: StorageBackend, args: dict) -> dict:
     """Handle witness_query tool call."""
     from_time = None
     to_time = None
-    
+
     if args.get("from_time"):
         from_time = datetime.fromisoformat(args["from_time"].replace("Z", "+00:00"))
     if args.get("to_time"):
         to_time = datetime.fromisoformat(args["to_time"].replace("Z", "+00:00"))
-    
+
     action_type = ActionType(args["action_type"]) if args.get("action_type") else None
     sensitivity = Sensitivity(args["sensitivity"]) if args.get("sensitivity") else None
-    
+
     records = await store.query(
         session_id=args.get("session_id"),
         actor_id=args.get("actor_id"),
@@ -510,7 +538,7 @@ async def handle_query(store: WitnessStorage, args: dict) -> dict:
         to_time=to_time,
         limit=args.get("limit", 100),
     )
-    
+
     return {
         "count": len(records),
         "records": [
@@ -531,21 +559,21 @@ async def handle_query(store: WitnessStorage, args: dict) -> dict:
     }
 
 
-async def handle_chain(store: WitnessStorage, args: dict) -> dict:
+async def handle_chain(store: StorageBackend, args: dict) -> dict:
     """Handle witness_chain tool call."""
     session_id = args.get("session_id")
     record_id = args.get("record_id")
-    
+
     if record_id:
         record = await store.get_by_id(record_id)
         if record:
             session_id = record.session_id
-    
+
     if not session_id:
         return {"error": "session_id or record_id required"}
-    
+
     records = await store.get_chain_for_session(session_id)
-    
+
     return {
         "session_id": session_id,
         "chain_length": len(records),
@@ -564,11 +592,11 @@ async def handle_chain(store: WitnessStorage, args: dict) -> dict:
     }
 
 
-async def handle_stats(store: WitnessStorage) -> dict:
+async def handle_stats(store: StorageBackend) -> dict:
     """Handle witness_stats tool call."""
     stats = await store.get_stats()
     anchor_stats = await store.get_anchor_stats()
-    
+
     return {
         "total_records": stats.total_records,
         "first_record": stats.first_record_time.isoformat() if stats.first_record_time else None,
@@ -590,19 +618,19 @@ async def handle_stats(store: WitnessStorage) -> dict:
     }
 
 
-async def handle_attest(store: WitnessStorage, args: dict) -> dict:
+async def handle_attest(store: StorageBackend, args: dict) -> dict:
     """Handle witness_attest tool call."""
     # Note: Full RFC 3161 implementation would require additional libraries
     # This is a simplified version that records attestation intent
-    
+
     record_id = args.get("record_id")
     batch = args.get("batch", True)
-    
+
     if record_id:
         record = await store.get_by_id(record_id)
         if not record:
             return {"error": f"Record not found: {record_id}"}
-        
+
         # In production, this would call a TSA server
         # For now, we mark it with a timestamp
         anchor_time = datetime.now(timezone.utc).isoformat()
@@ -611,19 +639,19 @@ async def handle_attest(store: WitnessStorage, args: dict) -> dict:
             tsa_receipt=f"ATTESTATION:{anchor_time}".encode(),
             anchored_at=anchor_time,
         )
-        
+
         return {
             "success": True,
             "records_attested": 1,
             "anchor_time": anchor_time,
             "note": "RFC 3161 TSA integration available in production deployment",
         }
-    
+
     if batch:
         # Get unattested records
         records = await store.query(limit=1000)
         unattested = [r for r in records if r.tsa_receipt is None]
-        
+
         anchor_time = datetime.now(timezone.utc).isoformat()
         for record in unattested:
             await store.update_attestation(
@@ -631,46 +659,46 @@ async def handle_attest(store: WitnessStorage, args: dict) -> dict:
                 tsa_receipt=f"BATCH_ATTESTATION:{anchor_time}".encode(),
                 anchored_at=anchor_time,
             )
-        
+
         return {
             "success": True,
             "records_attested": len(unattested),
             "anchor_time": anchor_time,
             "note": "RFC 3161 TSA integration available in production deployment",
         }
-    
+
     return {"error": "Specify record_id or set batch=true"}
 
 
-async def handle_export(store: WitnessStorage, args: dict) -> dict:
+async def handle_export(store: StorageBackend, args: dict) -> dict:
     """Handle witness_export tool call."""
     from_time = None
     to_time = None
     output_path = args.get("output")
-    
+
     if args.get("from_time"):
         from_time = datetime.fromisoformat(args["from_time"].replace("Z", "+00:00"))
     if args.get("to_time"):
         to_time = datetime.fromisoformat(args["to_time"].replace("Z", "+00:00"))
-    
+
     records = await store.query(
         from_time=from_time,
         to_time=to_time,
         limit=10000,
     )
-    
+
     # Filter by session if specified
     session_ids = args.get("session_ids", [])
     if session_ids:
         records = [r for r in records if r.session_id in session_ids]
-    
+
     include_verification = args.get("include_verification", True)
     verification = None
     if include_verification:
         verification = await store.verify_chain()
-    
+
     export_format = args.get("format", "json")
-    
+
     if export_format == "summary":
         return {
             "export_format": "summary",
@@ -693,7 +721,7 @@ async def handle_export(store: WitnessStorage, args: dict) -> dict:
                 "issues": verification.issues if verification else None,
             } if include_verification else None,
         }
-    
+
     # Full JSON export
     export_data = {
         "export_format": "json",
@@ -747,11 +775,11 @@ async def handle_export(store: WitnessStorage, args: dict) -> dict:
 # New Handlers: Checkpoints and Anchoring
 # =========================================================================
 
-async def handle_checkpoints(store: WitnessStorage, args: dict) -> dict:
+async def handle_checkpoints(store: StorageBackend, args: dict) -> dict:
     """Handle witness_checkpoints tool call."""
     limit = args.get("limit", 20)
     checkpoints = await store.list_checkpoints(limit=limit)
-    
+
     return {
         "count": len(checkpoints),
         "checkpoints": [
@@ -768,13 +796,13 @@ async def handle_checkpoints(store: WitnessStorage, args: dict) -> dict:
     }
 
 
-async def handle_verify_fast(store: WitnessStorage, args: dict) -> dict:
+async def handle_verify_fast(store: StorageBackend, args: dict) -> dict:
     """Handle witness_verify_fast tool call."""
     from_seq = args.get("from_sequence")
     to_seq = args.get("to_sequence")
-    
+
     result = await store.verify_chain_fast(from_sequence=from_seq, to_sequence=to_seq)
-    
+
     return {
         "valid": result.valid,
         "records_checked": result.records_checked,
@@ -785,12 +813,12 @@ async def handle_verify_fast(store: WitnessStorage, args: dict) -> dict:
     }
 
 
-async def handle_anchor(store: WitnessStorage, args: dict) -> dict:
+async def handle_anchor(store: StorageBackend, args: dict) -> dict:
     """Handle witness_anchor tool call."""
     from .anchoring import AnchorType
-    
+
     checkpoint_id = args.get("checkpoint_id")
-    
+
     # Get latest checkpoint if not specified
     if checkpoint_id is None:
         checkpoints = await store.list_checkpoints(limit=1)
@@ -800,18 +828,18 @@ async def handle_anchor(store: WitnessStorage, args: dict) -> dict:
                 "hint": "Checkpoints are created every 1000 records",
             }
         checkpoint_id = checkpoints[0].id
-    
+
     # Parse anchor types
     anchor_types = None
     if args.get("anchor_types"):
         anchor_types = [AnchorType(t) for t in args["anchor_types"]]
-    
+
     try:
         receipts = await store.anchor_checkpoint(
             checkpoint_id=checkpoint_id,
             anchor_types=anchor_types,
         )
-        
+
         return {
             "checkpoint_id": checkpoint_id,
             "anchors_created": len(receipts),
@@ -821,52 +849,52 @@ async def handle_anchor(store: WitnessStorage, args: dict) -> dict:
         return {"error": str(e)}
 
 
-async def handle_verify_anchors(store: WitnessStorage, args: dict) -> dict:
+async def handle_verify_anchors(store: StorageBackend, args: dict) -> dict:
     """Handle witness_verify_anchors tool call."""
     checkpoint_id = args.get("checkpoint_id")
-    
+
     # Get latest checkpoint if not specified
     if checkpoint_id is None:
         checkpoints = await store.list_checkpoints(limit=1)
         if not checkpoints:
             return {"error": "No checkpoints exist yet"}
         checkpoint_id = checkpoints[0].id
-    
+
     result = await store.verify_anchors(checkpoint_id)
-    
+
     all_valid = all(a["valid"] for a in result["anchors"]) if result["anchors"] else True
-    
+
     return {
         **result,
         "status": "✅ All anchors valid" if all_valid else "⚠️ Some anchors failed verification",
     }
 
 
-async def handle_proof(store: WitnessStorage, args: dict) -> dict:
+async def handle_proof(store: StorageBackend, args: dict) -> dict:
     """Handle witness_proof tool call."""
     sequence = args.get("sequence")
     if sequence is None:
         return {"error": "sequence is required"}
-    
+
     proof = await store.get_proof_package(sequence)
-    
+
     if proof is None:
         return {"error": f"Record with sequence {sequence} not found"}
-    
+
     return proof
 
 
-async def handle_backfill(store: WitnessStorage) -> dict:
+async def handle_backfill(store: StorageBackend) -> dict:
     """Handle witness_backfill tool call."""
     checkpoints_created = await store.backfill_checkpoints()
-    
+
     return {
         "checkpoints_created": checkpoints_created,
         "status": f"✅ Created {checkpoints_created} checkpoints" if checkpoints_created > 0 else "No new checkpoints needed",
     }
 
 
-async def handle_compliance(store: WitnessStorage, args: dict) -> dict:
+async def handle_compliance(store: StorageBackend, args: dict) -> dict:
     """Handle witness_configure_compliance tool call."""
     from .compliance import get_preset, get_preset_summary
 
@@ -910,9 +938,9 @@ async def handle_compliance(store: WitnessStorage, args: dict) -> dict:
 async def main():
     """Run the MCP server."""
     global storage
-    storage = WitnessStorage(DEFAULT_DB_PATH)
+    storage = _create_storage()
     await storage.connect()
-    
+
     try:
         async with stdio_server() as (read_stream, write_stream):
             await server.run(read_stream, write_stream, server.create_initialization_options())
