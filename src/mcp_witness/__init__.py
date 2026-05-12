@@ -2,6 +2,7 @@
 
 __version__ = "0.6.0"
 
+from . import metrics
 from .anchoring import (
     AnchorReceipt,
     AnchorService,
@@ -51,6 +52,8 @@ def _load_pg_storage():
 
 
 __all__ = [
+    # Metrics
+    "metrics",
     # Version
     "__version__",
     # Auth / RBAC

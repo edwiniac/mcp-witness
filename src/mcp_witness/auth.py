@@ -39,6 +39,7 @@ _READ_TOOLS = frozenset(
         "witness_export",
         "witness_checkpoints",
         "witness_proof",
+        "witness_metrics",
     }
 )
 

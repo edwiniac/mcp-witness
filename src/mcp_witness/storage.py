@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -14,6 +15,7 @@ from uuid import UUID
 
 import aiosqlite
 
+from . import metrics as _metrics
 from .anchoring import AnchorReceipt, AnchorService, AnchorType
 from .crypto_agility import (
     CURRENT_SIGNING_ALGO,
@@ -131,6 +133,8 @@ class SqliteStorage(StorageBackend):
         self._record_insert_count = 0
         self._chain_valid_at_startup: Optional[bool] = None
         self._last_record_hash: Optional[str] = None
+        self._active_transactions: int = 0
+        self._transaction_lock = threading.Lock()
 
     async def connect(self) -> None:
         """Connect to the database and ensure schema exists."""
@@ -164,6 +168,10 @@ class SqliteStorage(StorageBackend):
         last_record = await self._get_last_record()
         if last_record:
             self._last_record_hash = last_record["record_hash"]
+
+    async def has_inflight_writes(self) -> bool:
+        """Check if there are any in-flight write transactions."""
+        return self._active_transactions > 0
 
     async def close(self) -> None:
         """Close the database connection."""
@@ -584,15 +592,21 @@ class SqliteStorage(StorageBackend):
                 await self._db.execute("ROLLBACK")
                 raise
 
-        (
-            sequence,
-            prev_hash,
-            record_hash,
-            signature,
-            signer_pk,
-            canonical_payload_hex,
-            signer_key_id,
-        ) = await self._retry_on_busy(_do_insert)
+        with self._transaction_lock:
+            self._active_transactions += 1
+        try:
+            (
+                sequence,
+                prev_hash,
+                record_hash,
+                signature,
+                signer_pk,
+                canonical_payload_hex,
+                signer_key_id,
+            ) = await self._retry_on_busy(_do_insert)
+        finally:
+            with self._transaction_lock:
+                self._active_transactions -= 1
 
         # Runtime invariant: check prev_hash chain is intact
         if self._last_record_hash is not None and prev_hash != self._last_record_hash:
@@ -632,6 +646,8 @@ class SqliteStorage(StorageBackend):
             canonical_payload=canonical_payload_hex,
             signer_key_id=signer_key_id,
         )
+
+        _metrics.records_written.inc()
 
         # Check if we should create a checkpoint (outside the transaction)
         await self._maybe_create_checkpoint(record.sequence)
@@ -903,7 +919,13 @@ class SqliteStorage(StorageBackend):
                 await self._db.execute("ROLLBACK")
                 raise
 
-        result_records = await self._retry_on_busy(_do_batch_insert)
+        with self._transaction_lock:
+            self._active_transactions += 1
+        try:
+            result_records = await self._retry_on_busy(_do_batch_insert)
+        finally:
+            with self._transaction_lock:
+                self._active_transactions -= 1
 
         # Create checkpoints (outside the transaction)
         for rec in result_records:
@@ -983,6 +1005,7 @@ class SqliteStorage(StorageBackend):
             (*params, limit, offset),
         )
         rows = await cursor.fetchall()
+        _metrics.records_read.inc(len(rows))
         return [self._row_to_record(row) for row in rows]
 
     async def search(
@@ -1117,6 +1140,7 @@ class SqliteStorage(StorageBackend):
                         if record.signer_key_id:
                             trust_store = get_trust_store()
                             if trust_store.is_revoked(record.signer_key_id):
+                                _metrics.signature_failures.inc()
                                 if first_invalid is None:
                                     first_invalid = record.sequence
                                 issues.append(
@@ -1131,6 +1155,7 @@ class SqliteStorage(StorageBackend):
                                 if not verify_canonical_signature(
                                     canonical_bytes, sig_data, pk_bytes
                                 ):
+                                    _metrics.signature_failures.inc()
                                     if first_invalid is None:
                                         first_invalid = record.sequence
                                     issues.append(
@@ -1138,6 +1163,7 @@ class SqliteStorage(StorageBackend):
                                         f"sequence {record.sequence}"
                                     )
                             except Exception:
+                                _metrics.signature_failures.inc()
                                 if first_invalid is None:
                                     first_invalid = record.sequence
                                 issues.append(
@@ -1152,6 +1178,7 @@ class SqliteStorage(StorageBackend):
                                     record.signature,
                                     pk_bytes,
                                 ):
+                                    _metrics.signature_failures.inc()
                                     if first_invalid is None:
                                         first_invalid = record.sequence
                                     issues.append(
@@ -1166,6 +1193,7 @@ class SqliteStorage(StorageBackend):
                                     sig_hex,
                                     pk_bytes,
                                 ):
+                                    _metrics.signature_failures.inc()
                                     if first_invalid is None:
                                         first_invalid = record.sequence
                                     issues.append(
@@ -1173,12 +1201,14 @@ class SqliteStorage(StorageBackend):
                                         f"sequence {record.sequence}"
                                     )
                     else:
+                        _metrics.signature_failures.inc()
                         if first_invalid is None:
                             first_invalid = record.sequence
                         issues.append(
                             f"Unknown signature format at sequence {record.sequence}"
                         )
                 except Exception:
+                    _metrics.signature_failures.inc()
                     if first_invalid is None:
                         first_invalid = record.sequence
                     issues.append(f"Ed25519 signature data error at sequence {record.sequence}")
@@ -1194,6 +1224,7 @@ class SqliteStorage(StorageBackend):
 
         # Fire webhook on chain failure (non-blocking, fails gracefully)
         if not result.valid:
+            _metrics.chain_breaks.inc()
             try:
                 from .webhook import is_webhook_configured, notify_chain_failure
 
@@ -1201,6 +1232,14 @@ class SqliteStorage(StorageBackend):
                     import asyncio
 
                     asyncio.create_task(notify_chain_failure(result))
+
+                # Also try Slack notification
+                try:
+                    from .webhook import notify_chain_failure_slack
+
+                    asyncio.create_task(notify_chain_failure_slack(result))
+                except Exception:
+                    pass
             except Exception:
                 logger.debug("Webhook notification skipped (not configured or import failed)")
 
@@ -1917,7 +1956,10 @@ class SqliteStorage(StorageBackend):
                 await self._db.execute("ROLLBACK")
                 raise
 
-        return await self._retry_on_busy(_do_check)
+        result = await self._retry_on_busy(_do_check)
+        if not result:
+            _metrics.rate_limit_hits.inc()
+        return result
 
     async def get_rate_limit_state(self, bucket_id: str = "default") -> dict:
         """Get current bucket state."""
@@ -1958,6 +2000,9 @@ class SqliteStorage(StorageBackend):
         await self._db.commit()
 
         is_new = cursor.rowcount > 0
+
+        if not is_new:
+            _metrics.idempotency_duplicates.inc()
 
         # Periodic cleanup: every 100 inserts
         if self._nonce_insert_count % 100 == 0:

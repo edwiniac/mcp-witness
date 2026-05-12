@@ -45,6 +45,7 @@ postgres = [
 
 [project.scripts]
 mcp-witness = "mcp_witness.cli:main"
+mcp-witness-sbom = "mcp_witness.cli:cmd_sbom"
 
 [tool.setuptools.packages.find]
 where = ["src"]

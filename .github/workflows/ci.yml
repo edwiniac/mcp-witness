@@ -162,6 +162,24 @@ jobs:
           uv pip install --system -e ".[dev,postgres]"
           pip-audit 2>&1 | tail -20
 
+  # ── SBOM (Software Bill of Materials) ──────────────────────────────────────
+  sbom:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install cyclonedx-bom
+        run: pip install cyclonedx-bom
+      - name: Generate SBOM
+        run: cyclonedx-py -r -o sbom.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+
   # ── Build verification ─────────────────────────────────────────────────────
   build:
     needs: [test, test-postgres]

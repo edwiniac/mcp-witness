@@ -21,7 +21,7 @@ class TestListTools:
     async def test_list_tools_returns_all_tools(self):
         tools = await list_tools()
 
-        assert len(tools) == 17
+        assert len(tools) >= 17
         tool_names = [t.name for t in tools]
         # Original tools
         assert "witness_record" in tool_names

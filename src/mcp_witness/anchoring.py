@@ -21,6 +21,8 @@ from typing import Optional
 
 import httpx
 
+from . import metrics as _metrics
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -435,18 +437,26 @@ class TSAProvider(AnchorProvider):
             True if the receipt is structurally valid, False otherwise.
         """
         if not receipt.raw_receipt:
+            _metrics.anchor_verification_failures.inc()
             return False
 
         # Local attestation: verify self-consistency
         if receipt.anchor_type == AnchorType.LOCAL or receipt.receipt_id.startswith("local_"):
             try:
                 data = json.loads(receipt.raw_receipt)
-                return data.get("merkle_root") == receipt.merkle_root
+                result = data.get("merkle_root") == receipt.merkle_root
+                if not result:
+                    _metrics.anchor_verification_failures.inc()
+                return result
             except (json.JSONDecodeError, UnicodeDecodeError):
+                _metrics.anchor_verification_failures.inc()
                 return False
 
         # RFC 3161 receipt: validate full DER structure
-        return self._validate_der_receipt(receipt.raw_receipt)
+        result = self._validate_der_receipt(receipt.raw_receipt)
+        if not result:
+            _metrics.anchor_verification_failures.inc()
+        return result
 
 
 class OpenTimestampsProvider(AnchorProvider):
@@ -614,15 +624,18 @@ class OpenTimestampsProvider(AnchorProvider):
             True if the receipt has a valid OTS structure.
         """
         if not receipt.raw_receipt:
+            _metrics.anchor_verification_failures.inc()
             return False
 
         raw = receipt.raw_receipt
         if len(raw) < 2:
+            _metrics.anchor_verification_failures.inc()
             return False
 
         # OTS receipts start with magic bytes: \x00\x00
         # First byte = tag 0 (timestamp), second byte begins varint length
         if raw[0] != 0x00:
+            _metrics.anchor_verification_failures.inc()
             return False
 
         logger.warning(
@@ -632,7 +645,10 @@ class OpenTimestampsProvider(AnchorProvider):
         )
 
         # Parse the top-level timestamp structure
-        return self._ots_validate_structure(raw, 0, len(raw))
+        result = self._ots_validate_structure(raw, 0, len(raw))
+        if not result:
+            _metrics.anchor_verification_failures.inc()
+        return result
 
 
 class IPFSProvider(AnchorProvider):
@@ -729,6 +745,7 @@ class IPFSProvider(AnchorProvider):
             True if content integrity is verified, False otherwise.
         """
         if not receipt.verification_url or not receipt.receipt_id:
+            _metrics.anchor_verification_failures.inc()
             return False
 
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -736,6 +753,7 @@ class IPFSProvider(AnchorProvider):
                 # Fetch content from gateway
                 response = await client.get(receipt.verification_url, follow_redirects=True)
                 if response.status_code != 200:
+                    _metrics.anchor_verification_failures.inc()
                     logger.warning(
                         "IPFS verification failed: GET %s returned status %d",
                         receipt.verification_url,
@@ -747,6 +765,7 @@ class IPFSProvider(AnchorProvider):
                 content = response.content
                 computed_cid = compute_ipfs_cidv0(content)
                 if computed_cid != receipt.receipt_id:
+                    _metrics.anchor_verification_failures.inc()
                     logger.warning(
                         "IPFS verification failed: CID mismatch for %s. "
                         "Expected %s, computed %s",
@@ -758,6 +777,7 @@ class IPFSProvider(AnchorProvider):
                 return True
 
             except Exception as exc:
+                _metrics.anchor_verification_failures.inc()
                 logger.warning(
                     "IPFS verification failed: cannot fetch %s: %s: %s. "
                     "Cannot verify without fetching content.",

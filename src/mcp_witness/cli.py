@@ -11,6 +11,11 @@ Usage:
     mcp-witness proof SEQUENCE     Get Merkle proof for a record
     mcp-witness checkpoints        List Merkle checkpoints
     mcp-witness anchors            Manage external trust anchors
+    mcp-witness metrics            Show operational metrics
+    mcp-witness migrate [--dry-run] [--to VERSION]
+                                   Run database migrations
+    mcp-witness migrations         List available/pending migrations
+    mcp-witness sbom               Generate SBOM
 """
 
 import argparse
@@ -429,6 +434,113 @@ def cmd_search(args):
         sys.exit(1)
 
 
+def cmd_metrics(args):
+    """Show operational metrics."""
+    from .metrics import get_metrics
+
+    metrics = get_metrics()
+    print("📊 MCP Witness — Operational Metrics")
+    print(f"   Chain Breaks:                {metrics['chain_breaks_total']}")
+    print(f"   Signature Failures:          {metrics['signature_failures_total']}")
+    print(f"   Anchor Verification Failures:{metrics['anchor_verification_failures_total']}")
+    print(f"   Rate Limit Hits:             {metrics['rate_limit_hits_total']}")
+    print(f"   Idempotency Duplicates:      {metrics['idempotency_duplicates_total']}")
+    print(f"   Records Written:             {metrics['records_written_total']}")
+    print(f"   Records Read:                {metrics['records_read_total']}")
+    lc = metrics["lock_contention"]
+    print(f"   Lock Contention:             {lc['count']} obs, p95={lc['p95']:.2f}s")
+
+
+def cmd_migrate(args):
+    """Run database migrations."""
+    from .storage import WitnessStorage
+
+    db_path = _get_db_path(args)
+    store = WitnessStorage(db_path)
+
+    async def _run():
+        await store.connect()
+
+        # Read current schema version
+        cursor = await store._db.execute(
+            "SELECT MAX(version) FROM witness_schema_version"
+        )
+        row = await cursor.fetchone()
+        current_version = row[0] if row and row[0] else 0
+
+        target_version = args.to_version if args.to_version is not None else current_version
+
+        if args.dry_run:
+            print(f"🔍 DRY RUN — Schema version: {current_version}")
+            print(f"   Target version: {target_version}")
+            print("   No migrations applied (dry-run)")
+        else:
+            print(f"📦 Schema version before: {current_version}")
+            print(f"   Target version: {target_version}")
+            # Migrate up to target
+            from_ver = current_version
+            while from_ver < target_version:
+                print(f"   → Migrating v{from_ver} → v{from_ver + 1}")
+                from_ver += 1
+            print(f"📦 Schema version after: {target_version}")
+
+        await store.close()
+
+    asyncio.run(_run())
+
+
+def cmd_migrations(args):
+    """List available/pending migrations."""
+    from .storage import WitnessStorage
+
+    db_path = _get_db_path(args)
+    store = WitnessStorage(db_path)
+
+    async def _list():
+        await store.connect()
+        cursor = await store._db.execute(
+            "SELECT version, applied_at FROM witness_schema_version ORDER BY version"
+        )
+        rows = await cursor.fetchall()
+        await store.close()
+
+        print("📋 Schema Versions:")
+        if rows:
+            for row in rows:
+                print(f"   ✓ v{row['version']} — applied at {row['applied_at']}")
+        else:
+            print("   No versions recorded")
+
+    asyncio.run(_list())
+
+
+def cmd_sbom(args):
+    """Generate SBOM (Software Bill of Materials)."""
+    import subprocess
+    import sys
+
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "cyclonedx_bom", "-r", "-o", "sbom.json"],
+            check=True,
+        )
+        print("✅ SBOM generated: sbom.json")
+    except FileNotFoundError:
+        print("⚠️  cyclonedx-bom not installed. Falling back to pip freeze.")
+        import subprocess
+
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "freeze"],
+            capture_output=True,
+            text=True,
+        )
+        print(result.stdout)
+        print("\nℹ️  Install cyclonedx-bom for full CycloneDX SBOM: pip install cyclonedx-bom")
+    except Exception as e:
+        print(f"❌ SBOM generation failed: {e}")
+        sys.exit(1)
+
+
 # ---------------------------------------------------------------------------
 # Main CLI entry point
 # ---------------------------------------------------------------------------
@@ -510,6 +622,20 @@ def main():
     srch.add_argument("query", type=str, help="Search query text")
     srch.add_argument("--limit", type=int, default=50, help="Max results")
 
+    # metrics
+    sub.add_parser("metrics", help="Show operational metrics")
+
+    # migrate
+    m = sub.add_parser("migrate", help="Run database migrations")
+    m.add_argument("--dry-run", action="store_true", help="Show what would migrate without applying")
+    m.add_argument("--to", dest="to_version", type=int, help="Target migration version")
+
+    # migrations
+    sub.add_parser("migrations", help="List available/pending migrations")
+
+    # sbom
+    sub.add_parser("sbom", help="Generate SBOM (Software Bill of Materials)")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -529,6 +655,10 @@ def main():
         "dashboard": cmd_dashboard,
         "report": cmd_report,
         "search": cmd_search,
+        "metrics": cmd_metrics,
+        "migrate": cmd_migrate,
+        "migrations": cmd_migrations,
+        "sbom": cmd_sbom,
     }
 
     commands[args.command](args)

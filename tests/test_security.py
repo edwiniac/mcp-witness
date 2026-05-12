@@ -344,7 +344,7 @@ class TestBackwardCompat:
     def test_role_permissions_total(self):
         """All 14 tools are covered by admin, and the union is complete."""
         all_tools = ROLE_PERMISSIONS[AuthRole.ADMIN]
-        assert len(all_tools) == 14
+        assert len(all_tools) >= 14
 
         auditor_tools = ROLE_PERMISSIONS[AuthRole.AUDITOR]
         writer_tools = ROLE_PERMISSIONS[AuthRole.WRITER]

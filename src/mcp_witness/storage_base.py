@@ -49,6 +49,15 @@ class StorageBackend(ABC):
         """Close the storage backend connection(s)."""
         ...
 
+    async def has_inflight_writes(self) -> bool:
+        """Check if there are any in-flight write transactions.
+
+        Used by the graceful shutdown handler to wait for pending writes.
+        Returns False by default; backends that track transactions should
+        override this.
+        """
+        return False
+
     # ── Record CRUD ──────────────────────────────────────────────────────
 
     @abstractmethod

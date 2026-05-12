@@ -10,6 +10,8 @@ import asyncio
 import json
 import logging
 import os
+import signal
+import time
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
@@ -18,6 +20,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+from . import metrics as _metrics
 from .auth import authenticate, authorize
 from .models import (
     ActionType,
@@ -50,6 +53,12 @@ DEFAULT_DB_PATH = os.getenv("MCP_WITNESS_DB", "~/.mcp-witness/witness.db")
 MCP_WITNESS_BACKEND = os.getenv("MCP_WITNESS_BACKEND", "sqlite").lower()
 # PostgreSQL connection URL (required when backend is postgresql)
 MCP_WITNESS_PG_URL = os.getenv("MCP_WITNESS_PG_URL", "")
+
+# Graceful shutdown timeout (seconds to wait for in-flight writes)
+SHUTDOWN_TIMEOUT = int(os.getenv("MCP_WITNESS_SHUTDOWN_TIMEOUT", "30"))
+
+# Shutdown state
+_shutting_down = False
 
 
 def _create_storage() -> StorageBackend:
@@ -429,6 +438,13 @@ async def list_tools() -> list[Tool]:
                 "required": ["query"],
             },
         ),
+        Tool(
+            name="witness_metrics",
+            description="Get operational metrics for the witness system. "
+            "Returns counters for chain breaks, signature failures, "
+            "rate limit hits, idempotency duplicates, and more.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
     ]
 
 
@@ -477,6 +493,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await handle_delete(store, arguments)
         elif name == "witness_search":
             result = await handle_search(store, arguments)
+        elif name == "witness_metrics":
+            result = _metrics.get_metrics()
         else:
             result = {"error": f"Unknown tool: {name}"}
 
@@ -1161,10 +1179,38 @@ async def handle_search(store: StorageBackend, args: dict) -> dict:
         return {"error": str(e)}
 
 
+async def _handle_shutdown(sig: signal.Signals) -> None:
+    """Handle SIGTERM/SIGINT gracefully, waiting for in-flight writes."""
+    global _shutting_down
+    if _shutting_down:
+        logger.info("Shutdown already in progress, ignoring signal %s", sig)
+        return  # Already shutting down
+    _shutting_down = True
+    sig_name = signal.Signals(sig).name if isinstance(sig, int) else sig.name
+    logger.info("Received signal %s, shutting down gracefully", sig_name)
+
+    # Wait for in-flight writes
+    deadline = time.monotonic() + SHUTDOWN_TIMEOUT
+    while time.monotonic() < deadline:
+        if not await storage.has_inflight_writes():
+            break
+        await asyncio.sleep(0.1)
+
+    if storage:
+        await storage.close()
+    logger.info("Shutdown complete")
+
+
 async def main():
     """Run the MCP server."""
     global storage
     storage = _create_storage()
+
+    # Register signal handlers for graceful shutdown
+    loop = asyncio.get_event_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(_handle_shutdown(s)))
+
     await storage.connect()
 
     # Warn on startup chain verification failure (degraded operation)
@@ -1180,7 +1226,8 @@ async def main():
         async with stdio_server() as (read_stream, write_stream):
             await server.run(read_stream, write_stream, server.create_initialization_options())
     finally:
-        await storage.close()
+        if storage:
+            await storage.close()
 
 
 if __name__ == "__main__":
