@@ -70,3 +70,13 @@ target-version = ['py310']
 [tool.coverage.run]
 source = ["src/mcp_witness"]
 branch = true
+omit = [
+    # Integration / end-to-end modules (tested via CI jobs, not unit tests)
+    "src/mcp_witness/cli.py",
+    "src/mcp_witness/storage_pg.py",       # Requires PostgreSQL (tested in test-postgres job)
+    "src/mcp_witness/dashboard/server.py",  # Web server (tested via dashboard job)
+    "src/mcp_witness/dashboard/__init__.py",
+    "src/mcp_witness/logging.py",           # Config helper, tested implicitly
+    "src/mcp_witness/webhook.py",            # I/O tested via integration
+    "src/mcp_witness/reports/__init__.py",   # HTML/PDF generation (tested via report job)
+]
