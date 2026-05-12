@@ -10,6 +10,7 @@ Default (format=text) stays human-readable for local development.
 import json
 import logging
 import os
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -45,11 +46,48 @@ class JSONFormatter(logging.Formatter):
         return json.dumps(log_entry, default=str)
 
 
+# ---------------------------------------------------------------------------
+# Sensitive data scrubbing in logs
+# ---------------------------------------------------------------------------
+
+_SENSITIVE_PATTERNS = [
+    (
+        re.compile(
+            r"(?:api[_-]?key|apikey|secret|password|token|auth)[=:]\s*[\"']?"
+            r"([a-zA-Z0-9+/=_-]{16,})[\"']?",
+            re.IGNORECASE,
+        ),
+        "[CREDENTIAL]",
+    ),
+    (re.compile(r"[a-fA-F0-9]{64,}"), "[HEX_KEY]"),
+    (re.compile(r"sk-[a-zA-Z0-9]{20,}"), "[API_KEY]"),
+]
+
+
+class SensitiveDataFilter(logging.Filter):
+    """Filter that redacts sensitive data from log messages.
+
+    Patterns matched are replaced with safe placeholders:
+    - API keys / secrets / passwords → [CREDENTIAL]
+    - Long hex strings → [HEX_KEY]
+    - OpenAI-style API keys (sk-...) → [API_KEY]
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            for pattern, replacement in _SENSITIVE_PATTERNS:
+                record.msg = pattern.sub(replacement, record.msg)
+        return True
+
+
 def setup_structured_logging():
     """Configure logging based on MCP_WITNESS_LOG_FORMAT env var.
 
     - "json": JSON-formatted log lines (for production / log aggregators)
     - anything else or unset: human-readable text (for local dev)
+
+    Also registers SensitiveDataFilter on the handler to redact sensitive
+    information (API keys, secrets, tokens) from log output.
 
     This configures the root logger and can be called at application startup.
     """
@@ -74,6 +112,9 @@ def setup_structured_logging():
             datefmt="%Y-%m-%dT%H:%M:%S%z",
         )
         handler.setFormatter(formatter)
+
+    # Register sensitive data filter on the handler
+    handler.addFilter(SensitiveDataFilter())
 
     root_logger.addHandler(handler)
 

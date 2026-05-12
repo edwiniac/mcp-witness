@@ -10,6 +10,7 @@ Provides:
 - Payload input validation
 """
 
+import base64
 import hashlib
 import logging
 import os
@@ -18,7 +19,110 @@ import warnings
 from pathlib import Path
 from typing import Optional
 
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+from .models import Sensitivity
+
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Anchor Strict Mode
+# ---------------------------------------------------------------------------
+
+ANCHOR_STRICT_MODE = os.getenv("MCP_WITNESS_ANCHOR_STRICT", "true").lower() == "true"
+
+
+def is_anchor_strict_mode() -> bool:
+    """Check if anchoring strict mode is enabled.
+
+    When strict mode is ON (default), any provider failure in
+    AnchorService.anchor() raises AnchorFailureError.
+    When OFF, partial results are returned.
+
+    Configure via ``MCP_WITNESS_ANCHOR_STRICT=false`` for degraded operation.
+    """
+    return ANCHOR_STRICT_MODE
+
+
+# ---------------------------------------------------------------------------
+# Envelope Encryption for Sensitive Fields (AES-256-GCM)
+# ---------------------------------------------------------------------------
+
+_DEK: Optional[bytes] = None
+
+
+def get_data_encryption_key() -> bytes:
+    """Get or generate the data encryption key for AES-256-GCM.
+
+    Reads from ``MCP_WITNESS_DEK`` env var (32 bytes hex-encoded).
+    If not set, generates a random key (ephemeral per process).
+    """
+    global _DEK
+    if _DEK is not None:
+        return _DEK
+    key_hex = os.getenv("MCP_WITNESS_DEK")
+    if key_hex:
+        _DEK = bytes.fromhex(key_hex)
+        if len(_DEK) != 32:
+            raise ValueError("MCP_WITNESS_DEK must be 32 bytes (64 hex chars)")
+    else:
+        _DEK = AESGCM.generate_key(bit_length=256)
+    return _DEK
+
+
+def encrypt_field(plaintext: str) -> str:
+    """Encrypt a sensitive string field with AES-256-GCM.
+
+    Returns base64(nonce || ciphertext).
+    """
+    if not plaintext:
+        return plaintext
+    key = get_data_encryption_key()
+    nonce = os.urandom(12)
+    aesgcm = AESGCM(key)
+    ciphertext = aesgcm.encrypt(nonce, plaintext.encode(), None)
+    return base64.b64encode(nonce + ciphertext).decode()
+
+
+def decrypt_field(encrypted: str) -> str:
+    """Decrypt a field encrypted with encrypt_field().
+
+    Returns the original plaintext. If decryption fails (tampered data,
+    different key, or plaintext that was never encrypted), returns the
+    input as-is for backward compatibility with unencrypted records.
+    """
+    if not encrypted:
+        return encrypted
+    try:
+        key = get_data_encryption_key()
+        raw = base64.b64decode(encrypted)
+        nonce, ciphertext = raw[:12], raw[12:]
+        aesgcm = AESGCM(key)
+        return aesgcm.decrypt(nonce, ciphertext, None).decode()
+    except Exception:
+        # If decryption fails, return as-is for backward compat
+        return encrypted
+
+
+_SENSITIVE_FIELD_PATTERNS = {
+    "email", "phone", "ssn", "dob", "address", "name",
+    "creditcard", "bankaccount", "medicalrecord", "patientid",
+    "apikey", "password", "secret", "token",
+}
+
+
+def should_encrypt_field(field_name: str, sensitivity_level: Sensitivity) -> bool:
+    """Check if a field should be encrypted based on sensitivity and name.
+
+    All fields for PII/PHI/CONFIDENTIAL sensitivity levels are encrypted.
+    For lower levels, only known sensitive field names are encrypted.
+    Field name comparison is case-insensitive and ignores underscores.
+    """
+    if sensitivity_level in (Sensitivity.PII, Sensitivity.PHI, Sensitivity.CONFIDENTIAL):
+        return True
+    field_lower = field_name.lower().replace("_", "")
+    return any(s in field_lower for s in _SENSITIVE_FIELD_PATTERNS)
+
 
 # ---------------------------------------------------------------------------
 # HMAC Key for Hash Chain Protection

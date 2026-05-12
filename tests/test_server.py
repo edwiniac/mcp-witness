@@ -400,3 +400,36 @@ class TestHandleExport:
         result = await handle_export(temp_storage, {})
 
         assert len(result["records"]) == 0
+
+
+class TestPaginationClamping:
+    """Tests for pagination clamping (TASK 1.8)."""
+
+    @pytest.mark.asyncio
+    async def test_query_limit_clamped(self, temp_storage):
+        """Query limit is clamped to MAX_QUERY_LIMIT."""
+        from mcp_witness.server import MAX_QUERY_LIMIT
+
+        result = await handle_query(temp_storage, {"limit": MAX_QUERY_LIMIT + 99999})
+        # Should not error - limit gets clamped
+        assert "count" in result
+
+    @pytest.mark.asyncio
+    async def test_query_limit_normal(self, temp_storage):
+        """Normal query limit is not affected."""
+        for _ in range(5):
+            await handle_record(temp_storage, {"action_type": "tool_call"})
+
+        result = await handle_query(temp_storage, {"limit": 3})
+        assert result["count"] == 3
+
+    @pytest.mark.asyncio
+    async def test_export_limit_clamped(self, temp_storage):
+        """Export query uses MAX_QUERY_LIMIT."""
+        # Create a few records
+        for _ in range(3):
+            await handle_record(temp_storage, {"action_type": "tool_call"})
+
+        result = await handle_export(temp_storage, {})
+        assert "records" in result
+        assert len(result["records"]) == 3

@@ -87,6 +87,7 @@ class AnchorType(str, Enum):
     """Types of external trust anchors."""
 
     TSA = "tsa"  # RFC 3161 Timestamp Authority
+    LOCAL = "local"  # Local attestation (when explicitly requested)
     OPENTIMESTAMPS = "ots"  # OpenTimestamps (Bitcoin)
     IPFS = "ipfs"  # IPFS content addressing
 
@@ -318,83 +319,60 @@ class TSAProvider(AnchorProvider):
 
         Builds a proper DER-encoded TimeStampReq, sends it to the TSA,
         and returns the TimeStampResp token as a verifiable receipt.
+
+        Raises on failure (fail closed). Use anchor_or_none() for callers
+        that explicitly want graceful degradation.
         """
         timestamp = datetime.now(timezone.utc)
         receipt_id = hashlib.sha256(
             f"tsa_{merkle_root}_{timestamp.isoformat()}".encode()
         ).hexdigest()[:32]
 
-        try:
-            # Build proper DER-encoded RFC 3161 TimeStampReq
-            request_der = _build_tsa_request(merkle_root)
+        # Build proper DER-encoded RFC 3161 TimeStampReq
+        request_der = _build_tsa_request(merkle_root)
 
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(
-                    self.tsa_url,
-                    content=request_der,
-                    headers={"Content-Type": "application/timestamp-query"},
-                )
-
-                if response.status_code == 200:
-                    # response.content is a DER-encoded TimeStampResp
-                    return AnchorReceipt(
-                        anchor_type=AnchorType.TSA,
-                        merkle_root=merkle_root,
-                        timestamp=timestamp,
-                        receipt_id=receipt_id,
-                        raw_receipt=response.content,
-                        verification_url=self.tsa_url.replace("/tsr", "/verify"),
-                        cost_usd=0.0,
-                        metadata={
-                            "tsa_url": self.tsa_url,
-                            "status": "anchored",
-                            "standard": "RFC 3161",
-                            "nonce": True,
-                        },
-                    )
-                else:
-                    raise Exception(f"TSA returned HTTP {response.status_code}")
-
-        except Exception as exc:
-            # TSA unavailable: create a local attestation (still auditable,
-            # but relies on our own clock, not external TSA)
-            logger.error(
-                "TSA request failed for merkle_root=%s: %s: %s",
-                merkle_root,
-                type(exc).__name__,
-                exc,
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(
+                self.tsa_url,
+                content=request_der,
+                headers={"Content-Type": "application/timestamp-query"},
             )
 
-            # Save error info before exc goes out of scope (Python 3 cleans up except vars)
-            error_name = type(exc).__name__
-            error_msg = str(exc)
+            if response.status_code == 200:
+                # response.content is a DER-encoded TimeStampResp
+                return AnchorReceipt(
+                    anchor_type=AnchorType.TSA,
+                    merkle_root=merkle_root,
+                    timestamp=timestamp,
+                    receipt_id=receipt_id,
+                    raw_receipt=response.content,
+                    verification_url=self.tsa_url.replace("/tsr", "/verify"),
+                    cost_usd=0.0,
+                    metadata={
+                        "tsa_url": self.tsa_url,
+                        "status": "anchored",
+                        "standard": "RFC 3161",
+                        "nonce": True,
+                    },
+                )
+            else:
+                raise Exception(f"TSA returned HTTP {response.status_code}")
 
-        # Fallback: explicit local attestation with error details
-        attestation = {
-            "version": "mcp-witness-tsa-v1",
-            "type": "local_attestation",
-            "merkle_root": merkle_root,
-            "timestamp": timestamp.isoformat(),
-            "tsa_url": self.tsa_url,
-            "tsa_error": "TSA unavailable",
-            "metadata": metadata,
-        }
-        attestation_bytes = json.dumps(attestation, sort_keys=True).encode()
-        attestation_hash = hashlib.sha256(attestation_bytes).hexdigest()
+    async def anchor_or_none(self, merkle_root: str, metadata: dict) -> Optional[AnchorReceipt]:
+        """
+        Graceful version of anchor() that returns None on failure.
 
-        return AnchorReceipt(
-            anchor_type=AnchorType.TSA,
-            merkle_root=merkle_root,
-            timestamp=timestamp,
-            receipt_id=f"local_{attestation_hash[:28]}",
-            raw_receipt=attestation_bytes,
-            cost_usd=0.0,
-            metadata={
-                "type": "local_attestation",
-                "status": "local_fallback",
-                "error": f"{error_name}: {error_msg}",
-            },
-        )
+        For callers that explicitly want graceful degradation instead of
+        fail-closed behavior.
+        """
+        try:
+            return await self.anchor(merkle_root, metadata)
+        except Exception:
+            logger.warning(
+                "TSA anchor_or_none failed for merkle_root=%s",
+                merkle_root,
+            )
+            return None
 
     @staticmethod
     def _validate_der_receipt(raw: bytes) -> bool:
@@ -460,7 +438,7 @@ class TSAProvider(AnchorProvider):
             return False
 
         # Local attestation: verify self-consistency
-        if receipt.receipt_id.startswith("local_"):
+        if receipt.anchor_type == AnchorType.LOCAL or receipt.receipt_id.startswith("local_"):
             try:
                 data = json.loads(receipt.raw_receipt)
                 return data.get("merkle_root") == receipt.merkle_root
@@ -790,6 +768,14 @@ class IPFSProvider(AnchorProvider):
                 return False
 
 
+class AnchorFailureError(Exception):
+    """Raised when anchoring fails in strict mode."""
+
+    def __init__(self, message: str, failures: list[dict]):
+        self.failures = failures
+        super().__init__(message)
+
+
 class AnchorService:
     """
     Multi-anchor service for MCP-Witness.
@@ -835,12 +821,19 @@ class AnchorService:
 
         Returns:
             List of receipts from successful anchors
+
+        Raises:
+            AnchorFailureError: If strict mode is enabled and any provider fails.
         """
+        from .security import is_anchor_strict_mode
+
         metadata = metadata or {}
 
         providers = list(self.providers.values())
         if anchor_types:
             providers = [p for p in providers if p.anchor_type in anchor_types]
+
+        strict = is_anchor_strict_mode()
 
         # Anchor to all providers concurrently
         tasks = [p.anchor(merkle_root, metadata) for p in providers]
@@ -855,7 +848,16 @@ class AnchorService:
             else:
                 receipts.append(result)
 
-        # Return what we have (some providers may have failed)
+        # In strict mode, fail closed if any provider errored
+        if strict and errors:
+            failure_detail = "; ".join(
+                f"{e['provider']}: {e['error']}" for e in errors
+            )
+            raise AnchorFailureError(
+                f"Anchoring failed in strict mode: {failure_detail}",
+                failures=errors,
+            )
+
         return receipts
 
     async def verify(self, receipt: AnchorReceipt) -> bool:

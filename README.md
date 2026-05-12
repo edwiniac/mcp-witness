@@ -16,7 +16,7 @@ mcp-witness quickstart
 
 ## ✨ Why mcp-witness?
 
-AI agents make decisions. Regulators ask questions. mcp-witness provides **cryptographic proof** of what happened, when, and why — with hash chain integrity, Merkle tree verification, Ed25519 signatures, external trust anchoring (RFC 3161 TSA, Bitcoin OpenTimestamps, IPFS), and compliance presets for HIPAA, GDPR, SOC2, and more.
+AI agents make decisions. Regulators ask questions. mcp-witness provides **cryptographic proof** of what happened, when, and why — with hash chain integrity, Merkle tree verification, Ed25519 signatures, external trust anchoring (RFC 3161 TSA strict mode with optional local attestation, OpenTimestamps for structural verification, IPFS), and compliance presets for HIPAA, GDPR, SOC2, and more.
 
 | Feature | mcp-witness | Standard Logging |
 |---------|-------------|-----------------|
@@ -27,12 +27,22 @@ AI agents make decisions. Regulators ask questions. mcp-witness provides **crypt
 | Compliance presets | ✅ HIPAA, GDPR, SOX, PCI DSS, FedRAMP, SOC2 | ❌ Manual configuration |
 | PII/PHI redaction | ✅ Cryptographic hashing | ❌ Plaintext or manual |
 | GDPR right to erasure | ✅ `witness_delete` with chain preservation | ❌ Destructive deletion |
-| Legal-grade proof | ✅ RFC 3161 timestamps | ❌ None |
+| Legal-grade proof | ⚠️ RFC 3161 timestamps (strict mode default; local attestation in degraded mode) | ❌ None |
 | Chain failure alerts | ✅ Webhook notifications | ❌ Silent failure |
 | Multi-tenancy | ✅ org_id isolation | ❌ None |
 | Reports | ✅ HTML + PDF compliance reports | ❌ Manual |
 | Dashboard | ✅ Web dashboard with live API | ❌ None |
 | Structured logging | ✅ JSON log format option | ❌ Unstructured |
+
+### 🔒 Assurance Levels
+
+| Level | Description | Current |
+|-------|-------------|---------|
+| ASSURANCE-1 | Best-effort logging, no cryptographic guarantees | — |
+| ASSURANCE-2 | Hash chain + Merkle trees, tamper-EVIDENT, configurable anchoring | **v0.6.0** |
+| ASSURANCE-3 | Non-repudiation (Ed25519), strict anchoring, encryption at rest, formal threat model | **Target: v1.0** |
+
+See [SECURITY.md](SECURITY.md) for the full threat model.
 
 ## 🚀 30-Second Quickstart
 
@@ -196,8 +206,8 @@ Single record: **O(log n)** with Merkle proof (vs O(n) linear scan).
 - **SHA-256 hash chain** with null-byte delimiters to prevent collision attacks
 - **Ed25519 record signing** — auto-generated ephemeral keys, configurable via env var
 - **HMAC key protection** — optional server-side secret makes hashes un-recomputable
-- **RFC 3161 TSA anchoring** — legal-grade timestamps from FreeTSA or custom TSA
-- **Bitcoin OpenTimestamps** — free anchoring to the Bitcoin blockchain
+- **RFC 3161 TSA anchoring** — legal-grade timestamps (strict mode; local attestation in degraded mode)
+- **OpenTimestamps** — structural verification (full Bitcoin confirmation requires external OTS client)
 - **IPFS content addressing** — CIDv0/CIDv1 computation with gateway verification
 - **Domain-separated Merkle trees** — prevents second-preimage attacks
 - **Atomic transactions** — `BEGIN IMMEDIATE` prevents race conditions and chain forks

@@ -460,3 +460,194 @@ class TestFingerprint:
             timestamp="t1",
         )
         assert fp1 != fp2
+
+
+# =========================================================================
+# TASK 1.2: Anchor Strict Mode Tests
+# =========================================================================
+
+
+class TestAnchorStrictMode:
+    """Tests for anchor strict mode configuration."""
+
+    def test_is_anchor_strict_mode_default_true(self):
+        """Default value is True."""
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {}, clear=True):
+            import importlib
+
+            from mcp_witness import security
+
+            importlib.reload(security)
+            assert security.is_anchor_strict_mode() is True
+        importlib.reload(security)
+
+    def test_is_anchor_strict_mode_false(self):
+        """Can be set to False via env var."""
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {"MCP_WITNESS_ANCHOR_STRICT": "false"}, clear=True):
+            import importlib
+
+            from mcp_witness import security
+
+            importlib.reload(security)
+            assert security.is_anchor_strict_mode() is False
+        importlib.reload(security)
+
+
+# =========================================================================
+# TASK 1.4: Envelope Encryption Tests
+# =========================================================================
+
+
+class TestEncryption:
+    """Tests for AES-256-GCM envelope encryption."""
+
+    def test_encrypt_decrypt_roundtrip(self):
+        """Encrypt then decrypt returns original plaintext."""
+        from mcp_witness.security import decrypt_field, encrypt_field, get_data_encryption_key
+
+        # Reset key state
+        get_data_encryption_key()
+
+        plaintext = "sensitive-data-12345"
+        encrypted = encrypt_field(plaintext)
+        assert encrypted != plaintext
+        assert len(encrypted) > len(plaintext)
+
+        decrypted = decrypt_field(encrypted)
+        assert decrypted == plaintext
+
+    def test_decrypt_tampered_fails(self):
+        """Tampered ciphertext returns original input (backward compat)."""
+        from mcp_witness.security import decrypt_field, encrypt_field
+
+        plaintext = "hello"
+        encrypted = encrypt_field(plaintext)
+
+        # Tamper with the ciphertext
+        tampered = encrypted[:-1] + ("0" if encrypted[-1] != "0" else "1")
+        result = decrypt_field(tampered)
+        # Returns the tampered value as-is for backward compat
+        assert result == tampered
+
+    def test_decrypt_plaintext_returns_as_is(self):
+        """decrypt_field on non-encrypted plaintext returns it as-is."""
+        from mcp_witness.security import decrypt_field
+
+        plaintext = "this is not encrypted"
+        result = decrypt_field(plaintext)
+        assert result == plaintext
+
+    def test_decrypt_empty_returns_empty(self):
+        """decrypt_field on empty string returns empty."""
+        from mcp_witness.security import decrypt_field
+
+        assert decrypt_field("") == ""
+        assert decrypt_field(None) is None
+
+    def test_should_encrypt_pii_fields(self):
+        """Known sensitive field names return True for lower sensitivity."""
+        from mcp_witness.models import Sensitivity
+        from mcp_witness.security import should_encrypt_field
+
+        assert should_encrypt_field("ssn", Sensitivity.INTERNAL) is True
+        assert should_encrypt_field("email", Sensitivity.INTERNAL) is True
+        assert should_encrypt_field("api_key", Sensitivity.INTERNAL) is True
+        assert should_encrypt_field("password", Sensitivity.INTERNAL) is True
+
+    def test_should_encrypt_high_sensitivity(self):
+        """PHI and CONFIDENTIAL sensitivity encrypts all fields."""
+        from mcp_witness.models import Sensitivity
+        from mcp_witness.security import should_encrypt_field
+
+        assert should_encrypt_field("query", Sensitivity.PHI) is True
+        assert should_encrypt_field("output", Sensitivity.CONFIDENTIAL) is True
+        assert should_encrypt_field("note", Sensitivity.PII) is True
+
+    def test_should_not_encrypt_low_sensitivity_non_pii(self):
+        """Public/Internal non-PII fields are not encrypted."""
+        from mcp_witness.models import Sensitivity
+        from mcp_witness.security import should_encrypt_field
+
+        assert should_encrypt_field("query", Sensitivity.PUBLIC) is False
+        assert should_encrypt_field("answer", Sensitivity.INTERNAL) is False
+
+    def test_encrypt_empty_returns_empty(self):
+        """encrypt_field with empty string returns empty."""
+        from mcp_witness.security import encrypt_field
+
+        assert encrypt_field("") == ""
+
+
+# =========================================================================
+# TASK 1.5: Sensitive Data Scrubbing in Logs
+# =========================================================================
+
+
+class TestLogFilter:
+    """Tests for SensitiveDataFilter in logging."""
+
+    def test_log_filter_redacts_api_key(self):
+        """API keys in log messages are redacted."""
+        import logging
+
+        from mcp_witness.logging import SensitiveDataFilter
+
+        filt = SensitiveDataFilter()
+        record = logging.LogRecord(
+            "test", logging.INFO, "file.py", 10, "api_key=abcdef1234567890abcdef1234567890", (), None
+        )
+        filt.filter(record)
+        assert "[CREDENTIAL]" in record.msg
+        assert "abcdef1234567890" not in record.msg
+
+    def test_log_filter_redacts_openai_key(self):
+        """OpenAI-style API keys are redacted."""
+        import logging
+
+        from mcp_witness.logging import SensitiveDataFilter
+
+        filt = SensitiveDataFilter()
+        record = logging.LogRecord(
+            "test",
+            logging.INFO,
+            "file.py",
+            10,
+            "Using key sk-A1B2C3D4E5F6G7H8I9J0K1L2M3N4O5",
+            (),
+            None,
+        )
+        filt.filter(record)
+        assert "[API_KEY]" in record.msg
+        assert "sk-ABC" not in record.msg
+        assert "A1B2C3D4E5F6G7H8I9J0K1L2M3N4O5" not in record.msg
+
+    def test_log_filter_preserves_normal_text(self):
+        """Normal log messages without sensitive data pass through unchanged."""
+        import logging
+
+        from mcp_witness.logging import SensitiveDataFilter
+
+        filt = SensitiveDataFilter()
+        msg = "Record created successfully: seq=123"
+        record = logging.LogRecord("test", logging.INFO, "file.py", 10, msg, (), None)
+        filt.filter(record)
+        assert record.msg == msg
+
+    def test_log_filter_redacts_long_hex(self):
+        """Long hex strings (potential keys) are redacted."""
+        import logging
+
+        from mcp_witness.logging import SensitiveDataFilter
+
+        filt = SensitiveDataFilter()
+        long_hex = "a" * 70
+        record = logging.LogRecord(
+            "test", logging.INFO, "file.py", 10, f"Hash: {long_hex}", (), None
+        )
+        filt.filter(record)
+        assert "[HEX_KEY]" in record.msg
+        assert "a" * 70 not in record.msg

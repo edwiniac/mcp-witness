@@ -579,3 +579,100 @@ class TestIPFSVerify:
             mock_get.side_effect = Exception("Connection failed")
 
             assert not await provider.verify(receipt)
+
+
+# =========================================================================
+# TASK 1.1: TSA Fake Fallback Removal Tests
+# =========================================================================
+
+
+class TestTSAFailClosed:
+    """Tests for TSA fail-closed behavior (TASK 1.1)."""
+
+    @pytest.mark.asyncio
+    async def test_tsa_fails_closed(self):
+        """TSAProvider.anchor() must raise on failure, not create local attestation."""
+        provider = TSAProvider(tsa_url="https://nonexistent-tsa.example.com/tsr", timeout=0.1)
+
+        with pytest.raises(Exception):
+            await provider.anchor("a" * 64, {})
+
+    @pytest.mark.asyncio
+    async def test_tsa_anchor_or_none_returns_none_on_failure(self):
+        """TSAProvider.anchor_or_none() returns None on failure."""
+        provider = TSAProvider(tsa_url="https://nonexistent-tsa.example.com/tsr", timeout=0.1)
+
+        result = await provider.anchor_or_none("a" * 64, {})
+        assert result is None
+
+    def test_local_anchor_type_distinct_from_tsa(self):
+        """AnchorType.LOCAL is distinct from AnchorType.TSA."""
+        assert AnchorType.LOCAL != AnchorType.TSA
+        assert AnchorType.LOCAL.value == "local"
+
+
+# =========================================================================
+# TASK 1.2: Anchor Strict Mode Tests
+# =========================================================================
+
+
+class TestAnchorStrictMode:
+    """Tests for anchoring strict mode (TASK 1.2)."""
+
+    @pytest.mark.asyncio
+    async def test_tsa_strict_mode_fails_on_provider_error(self):
+        """AnchorService.anchor() raises AnchorFailureError in strict mode."""
+        from unittest.mock import patch
+
+        from mcp_witness.anchoring import AnchorFailureError, AnchorService
+
+        with patch.dict("os.environ", {"MCP_WITNESS_ANCHOR_STRICT": "true"}, clear=False):
+            # Reload the module to pick up new env var
+            import importlib
+
+            import mcp_witness.security
+
+            importlib.reload(mcp_witness.security)
+
+            service = AnchorService()
+            # Force TSA provider to fail by using unreachable URL
+            provider = TSAProvider(tsa_url="https://nonexistent-tsa.example.com/tsr", timeout=0.1)
+            service.add_provider(provider)
+
+            with pytest.raises(AnchorFailureError) as exc_info:
+                await service.anchor("a" * 64, {}, anchor_types=[AnchorType.TSA])
+            assert len(exc_info.value.failures) > 0
+
+        # Reset
+        importlib.reload(mcp_witness.security)
+
+    @pytest.mark.asyncio
+    async def test_non_strict_mode_returns_partial_results(self):
+        """With strict mode off, AnchorService returns partial results on failure."""
+        from unittest.mock import patch
+
+        from mcp_witness.anchoring import AnchorService
+
+        with patch.dict(
+            "os.environ", {"MCP_WITNESS_ANCHOR_STRICT": "false"}, clear=False
+        ):
+            import importlib
+
+            import mcp_witness.security
+
+            importlib.reload(mcp_witness.security)
+
+            service = AnchorService()
+            provider = TSAProvider(
+                tsa_url="https://nonexistent-tsa.example.com/tsr", timeout=0.1
+            )
+            service.add_provider(provider)
+
+            # Should not raise, should return empty receipts list (since all providers fail)
+            receipts = await service.anchor(
+                "a" * 64, {}, anchor_types=[AnchorType.TSA]
+            )
+            # In non-strict mode, partial results (possibly empty) are returned
+            assert isinstance(receipts, list)
+
+        importlib.reload(mcp_witness.security)

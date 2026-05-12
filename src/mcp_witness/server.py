@@ -8,6 +8,7 @@ Designed for SOC2, HIPAA, and GDPR compliance.
 
 import asyncio
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from typing import Optional
@@ -30,11 +31,17 @@ from .security import (
 from .storage import SqliteStorage
 from .storage_base import StorageBackend
 
+logger = logging.getLogger(__name__)
+
 # Initialize MCP server
 server = Server("mcp-witness")
 
 # Global storage instance (initialized on startup)
 storage: Optional[StorageBackend] = None
+
+# Pagination ceilings
+MAX_QUERY_LIMIT = 10000
+MAX_OFFSET = 100000
 
 # Default database path
 DEFAULT_DB_PATH = os.getenv("MCP_WITNESS_DB", "~/.mcp-witness/witness.db")
@@ -545,6 +552,11 @@ async def handle_query(store: StorageBackend, args: dict) -> dict:
     action_type = ActionType(args["action_type"]) if args.get("action_type") else None
     sensitivity = Sensitivity(args["sensitivity"]) if args.get("sensitivity") else None
 
+    limit = args.get("limit", 100)
+    if limit > MAX_QUERY_LIMIT:
+        logger.warning("Query limit %d exceeds max %d, clamping", limit, MAX_QUERY_LIMIT)
+        limit = min(limit, MAX_QUERY_LIMIT)
+
     records = await store.query(
         session_id=args.get("session_id"),
         actor_id=args.get("actor_id"),
@@ -553,7 +565,7 @@ async def handle_query(store: StorageBackend, args: dict) -> dict:
         sensitivity=sensitivity,
         from_time=from_time,
         to_time=to_time,
-        limit=args.get("limit", 100),
+        limit=limit,
     )
 
     return {
@@ -701,7 +713,7 @@ async def handle_export(store: StorageBackend, args: dict) -> dict:
     records = await store.query(
         from_time=from_time,
         to_time=to_time,
-        limit=10000,
+        limit=MAX_QUERY_LIMIT,
     )
 
     # Filter by session if specified
@@ -845,7 +857,7 @@ async def handle_verify_fast(store: StorageBackend, args: dict) -> dict:
 
 async def handle_anchor(store: StorageBackend, args: dict) -> dict:
     """Handle witness_anchor tool call."""
-    from .anchoring import AnchorType
+    from .anchoring import AnchorFailureError, AnchorType
 
     checkpoint_id = args.get("checkpoint_id")
 
@@ -875,8 +887,13 @@ async def handle_anchor(store: StorageBackend, args: dict) -> dict:
             "anchors_created": len(receipts),
             "anchors": [r.to_dict() for r in receipts],
         }
-    except Exception as e:
-        return {"error": str(e)}
+    except AnchorFailureError as e:
+        return {
+            "error": str(e),
+            "type": "AnchorFailureError",
+            "failures": e.failures,
+            "hint": "Set MCP_WITNESS_ANCHOR_STRICT=false for degraded operation",
+        }
 
 
 async def handle_verify_anchors(store: StorageBackend, args: dict) -> dict:
@@ -1099,6 +1116,9 @@ async def handle_search(store: StorageBackend, args: dict) -> dict:
     """
     query = args.get("query", "")
     limit = args.get("limit", 50)
+    if limit > MAX_QUERY_LIMIT:
+        logger.warning("Search limit %d exceeds max %d, clamping", limit, MAX_QUERY_LIMIT)
+        limit = min(limit, MAX_QUERY_LIMIT)
 
     if not query:
         return {"error": "'query' is required"}

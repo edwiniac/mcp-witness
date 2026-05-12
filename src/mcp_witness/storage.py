@@ -42,9 +42,12 @@ from .security import (
     check_idempotency,
     check_rate_limit,
     compute_action_fingerprint,
+    decrypt_field,
+    encrypt_field,
     get_hmac_key,
     get_public_key_hex,
     get_signing_key,
+    should_encrypt_field,
     validate_inputs,
 )
 from .storage_base import StorageBackend
@@ -404,6 +407,23 @@ class SqliteStorage(StorageBackend):
         processed_input = do_redact(input_data, redacted_fields) if input_data else None
         processed_output = do_redact(output_data, redacted_fields) if output_data else None
 
+        # Encrypt sensitive fields at rest (envelope encryption)
+        def _encrypt_dict(data: Optional[dict]) -> Optional[dict]:
+            if data is None:
+                return None
+            result = {}
+            for key, value in data.items():
+                if isinstance(value, str) and should_encrypt_field(key, sensitivity):
+                    result[key] = encrypt_field(value)
+                elif isinstance(value, dict):
+                    result[key] = _encrypt_dict(value)  # type: ignore[assignment]
+                else:
+                    result[key] = value
+            return result
+
+        encrypted_input = _encrypt_dict(processed_input)
+        encrypted_output = _encrypt_dict(processed_output)
+
         record_id = uuid4()
 
         async def _do_insert():
@@ -463,8 +483,8 @@ class SqliteStorage(StorageBackend):
                         session_id,
                         action_type.value,
                         tool_name,
-                        json.dumps(processed_input) if processed_input else None,
-                        json.dumps(processed_output) if processed_output else None,
+                        json.dumps(encrypted_input) if encrypted_input else None,
+                        json.dumps(encrypted_output) if encrypted_output else None,
                         input_hash,
                         output_hash,
                         json.dumps(context) if context else None,
@@ -606,6 +626,23 @@ class SqliteStorage(StorageBackend):
 
             record_id = uuid4()
 
+            # Encrypt sensitive fields at rest
+            def _encrypt_dict(data, sensitivity_level):
+                if data is None:
+                    return None
+                result = {}
+                for key, value in data.items():
+                    if isinstance(value, str) and should_encrypt_field(key, sensitivity_level):
+                        result[key] = encrypt_field(value)
+                    elif isinstance(value, dict):
+                        result[key] = _encrypt_dict(value, sensitivity_level)
+                    else:
+                        result[key] = value
+                return result
+
+            encrypted_input = _encrypt_dict(processed_input, sensitivity)
+            encrypted_output = _encrypt_dict(processed_output, sensitivity)
+
             processed.append(
                 {
                     "action_type": action_type,
@@ -615,6 +652,8 @@ class SqliteStorage(StorageBackend):
                     "tool_name": tool_name,
                     "processed_input": processed_input,
                     "processed_output": processed_output,
+                    "encrypted_input": encrypted_input,
+                    "encrypted_output": encrypted_output,
                     "input_hash": input_hash,
                     "output_hash": output_hash,
                     "timestamp": timestamp,
@@ -684,10 +723,10 @@ class SqliteStorage(StorageBackend):
                             rec["session_id"],
                             action_type.value,
                             rec["tool_name"],
-                            json.dumps(rec["processed_input"]) if rec["processed_input"] else None,
+                            json.dumps(rec["encrypted_input"]) if rec["encrypted_input"] else None,
                             (
-                                json.dumps(rec["processed_output"])
-                                if rec["processed_output"]
+                                json.dumps(rec["encrypted_output"])
+                                if rec["encrypted_output"]
                                 else None
                             ),
                             rec["input_hash"],
@@ -1872,8 +1911,27 @@ class SqliteStorage(StorageBackend):
             "Hash chain integrity preserved (record hashes unchanged).",
         }
 
+    @staticmethod
+    def _decrypt_dict(data: Optional[dict]) -> Optional[dict]:
+        """Recursively decrypt encrypted fields in a dict."""
+        if data is None:
+            return None
+        result: dict = {}
+        for key, value in data.items():
+            if isinstance(value, str) and len(value) > 32:
+                # Try to decrypt (returns as-is if not encrypted or tampered)
+                result[key] = decrypt_field(value)
+            elif isinstance(value, dict):
+                result[key] = SqliteStorage._decrypt_dict(value)
+            else:
+                result[key] = value
+        return result
+
     def _row_to_record(self, row: aiosqlite.Row) -> WitnessRecord:
         """Convert a database row to a WitnessRecord."""
+        input_data = json.loads(row["input_data"]) if row["input_data"] else None
+        output_data = json.loads(row["output_data"]) if row["output_data"] else None
+
         return WitnessRecord(
             id=UUID(row["id"]),
             timestamp=datetime.fromisoformat(row["timestamp"]),
@@ -1885,8 +1943,8 @@ class SqliteStorage(StorageBackend):
             session_id=row["session_id"],
             action_type=ActionType(row["action_type"]),
             tool_name=row["tool_name"],
-            input_data=json.loads(row["input_data"]) if row["input_data"] else None,
-            output_data=json.loads(row["output_data"]) if row["output_data"] else None,
+            input_data=self._decrypt_dict(input_data),
+            output_data=self._decrypt_dict(output_data),
             input_hash=row["input_hash"],
             output_hash=row["output_hash"],
             context=json.loads(row["context"]) if row["context"] else None,

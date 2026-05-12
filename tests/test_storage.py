@@ -897,3 +897,94 @@ class TestEd25519StorageSigning:
             assert len(r.signature) == 128
             assert r.signer_public_key is not None
             assert len(r.signer_public_key) == 64
+
+
+# =========================================================================
+# TASK 1.4: Envelope Encryption Tests
+# =========================================================================
+
+
+class TestStorageEncryption:
+    """Tests for data-at-rest encryption in storage."""
+
+    @pytest.mark.asyncio
+    async def test_record_encrypts_phi_sensitive_data(self, temp_storage):
+        """PHI sensitivity records encrypt all fields in the DB."""
+        from mcp_witness.models import Sensitivity
+
+        record = await temp_storage.record(
+            action_type=ActionType.TOOL_CALL,
+            input_data={
+                "email": "user@example.com",
+                "name": "John Doe",
+                "ssn": "123-45-6789",
+                "query": "What is Paris?",
+            },
+            sensitivity=Sensitivity.PHI,
+        )
+
+        # Returned record should have plaintext (decrypted on read)
+        assert record.input_data["email"] == "user@example.com"
+        assert record.input_data["ssn"] == "123-45-6789"
+
+        # Read raw from DB to verify it's encrypted
+        cursor = await temp_storage._db.execute(
+            "SELECT input_data FROM witness_records WHERE id = ?",
+            (str(record.id),),
+        )
+        row = await cursor.fetchone()
+        import json
+
+        raw = json.loads(row[0])
+        # All fields should be encrypted for PHI (base64, not plaintext)
+        assert "user@example.com" not in str(raw["email"])
+        assert "John Doe" not in str(raw["name"])
+        assert "123-45-6789" not in str(raw["ssn"])
+        # For PHI sensitivity, ALL fields including non-sensitive names are encrypted
+        assert "Paris" not in str(raw["query"])
+
+    @pytest.mark.asyncio
+    async def test_read_decrypts_encrypted_data(self, temp_storage):
+        """Reading back an encrypted record returns decrypted data."""
+        from mcp_witness.models import Sensitivity
+
+        original_email = "test@example.com"
+        original_name = "Alice"
+
+        record = await temp_storage.record(
+            action_type=ActionType.TOOL_CALL,
+            input_data={
+                "email": original_email,
+                "name": original_name,
+            },
+            sensitivity=Sensitivity.PHI,
+        )
+
+        # Read back via query
+        retrieved = await temp_storage.get_by_id(record.id)
+        assert retrieved is not None
+        assert retrieved.input_data["email"] == original_email
+        assert retrieved.input_data["name"] == original_name
+
+    @pytest.mark.asyncio
+    async def test_record_does_not_encrypt_public_data(self, temp_storage):
+        """Public sensitivity records with non-sensitive fields are plaintext."""
+        from mcp_witness.models import Sensitivity
+
+        record = await temp_storage.record(
+            action_type=ActionType.TOOL_CALL,
+            input_data={"query": "public data", "count": 42},
+            sensitivity=Sensitivity.PUBLIC,
+        )
+
+        # Read raw from DB
+        cursor = await temp_storage._db.execute(
+            "SELECT input_data FROM witness_records WHERE id = ?",
+            (str(record.id),),
+        )
+        row = await cursor.fetchone()
+        import json
+
+        raw = json.loads(row[0])
+        assert raw["query"] == "public data"  # Not encrypted
+        assert raw["count"] == 42  # Not encrypted

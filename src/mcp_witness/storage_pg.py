@@ -40,9 +40,12 @@ from .security import (
     check_idempotency,
     check_rate_limit,
     compute_action_fingerprint,
+    decrypt_field,
+    encrypt_field,
     get_hmac_key,
     get_public_key_hex,
     get_signing_key,
+    should_encrypt_field,
     validate_inputs,
 )
 from .storage_base import StorageBackend
@@ -180,10 +183,13 @@ class PgStorage(StorageBackend):
                     signature TEXT,
                     signer_public_key TEXT,
 
+                    org_id TEXT DEFAULT NULL,
+
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_pg_sequence ON witness_records(sequence);
+                CREATE INDEX IF NOT EXISTS idx_pg_org_id ON witness_records(org_id);
                 CREATE INDEX IF NOT EXISTS idx_pg_timestamp ON witness_records(timestamp);
                 CREATE INDEX IF NOT EXISTS idx_pg_session_id ON witness_records(session_id);
                 CREATE INDEX IF NOT EXISTS idx_pg_actor_id ON witness_records(actor_id);
@@ -274,8 +280,26 @@ class PgStorage(StorageBackend):
             return last["sequence"] + 1
         return 0
 
+    @staticmethod
+    def _decrypt_dict(data: Optional[dict]) -> Optional[dict]:
+        """Recursively decrypt encrypted fields in a dict."""
+        if data is None:
+            return None
+        result: dict = {}
+        for key, value in data.items():
+            if isinstance(value, str) and len(value) > 32:
+                result[key] = decrypt_field(value)
+            elif isinstance(value, dict):
+                result[key] = PgStorage._decrypt_dict(value)  # type: ignore[assignment]
+            else:
+                result[key] = value
+        return result
+
     def _row_to_record(self, row: asyncpg.Record) -> WitnessRecord:
         """Convert a PostgreSQL row to a WitnessRecord."""
+        input_data = _deserialize_json(row["input_data"])
+        output_data = _deserialize_json(row["output_data"])
+
         return WitnessRecord(
             id=row["id"],
             timestamp=row["timestamp"],
@@ -287,8 +311,8 @@ class PgStorage(StorageBackend):
             session_id=row["session_id"],
             action_type=ActionType(row["action_type"]),
             tool_name=row["tool_name"],
-            input_data=_deserialize_json(row["input_data"]),
-            output_data=_deserialize_json(row["output_data"]),
+            input_data=self._decrypt_dict(input_data),  # type: ignore[arg-type]
+            output_data=self._decrypt_dict(output_data),  # type: ignore[arg-type]
             input_hash=row["input_hash"],
             output_hash=row["output_hash"],
             context=_deserialize_json(row["context"]),
@@ -300,6 +324,7 @@ class PgStorage(StorageBackend):
             anchored_at=row.get("anchored_at"),
             signature=row.get("signature"),
             signer_public_key=row.get("signer_public_key"),
+            org_id=row.get("org_id"),
             redacted_fields=_deserialize_json(row.get("redacted_fields")) or [],
         )
 
@@ -322,6 +347,7 @@ class PgStorage(StorageBackend):
         sensitivity: Sensitivity = Sensitivity.INTERNAL,
         retention_days: int = 365,
         redact_fields: Optional[list[str]] = None,
+        org_id: Optional[str] = None,
     ) -> WitnessRecord:
         """
         Record a new action to the witness chain.
@@ -364,6 +390,23 @@ class PgStorage(StorageBackend):
         processed_input = do_redact(input_data, redacted_fields) if input_data else None
         processed_output = do_redact(output_data, redacted_fields) if output_data else None
 
+        # Encrypt sensitive fields at rest (envelope encryption)
+        def _encrypt_dict(data: Optional[dict]) -> Optional[dict]:
+            if data is None:
+                return None
+            result = {}
+            for key, value in data.items():
+                if isinstance(value, str) and should_encrypt_field(key, sensitivity):
+                    result[key] = encrypt_field(value)
+                elif isinstance(value, dict):
+                    result[key] = _encrypt_dict(value)  # type: ignore[assignment]
+                else:
+                    result[key] = value
+            return result
+
+        encrypted_input = _encrypt_dict(processed_input)
+        encrypted_output = _encrypt_dict(processed_output)
+
         record_id = uuid4()
 
         async with self._pool.acquire() as conn:
@@ -393,6 +436,9 @@ class PgStorage(StorageBackend):
                     signature = sign_record_hash(record_hash, signing_key)
                     signer_pk = get_public_key_hex()
 
+                # Resolve org_id: prefer explicit, fall back to env var
+                resolved_org_id = org_id or os.getenv("MCP_WITNESS_ORG_ID") or None
+
                 await conn.execute(
                     """
                     INSERT INTO witness_records (
@@ -402,10 +448,11 @@ class PgStorage(StorageBackend):
                         input_hash, output_hash,
                         context, reasoning, confidence,
                         sensitivity, retention_days, tsa_receipt, anchored_at,
-                        redacted_fields, signature, signer_public_key
+                        redacted_fields, signature, signer_public_key,
+                        org_id
                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                               $11, $12, $13, $14, $15, $16, $17, $18, $19,
-                              $20, $21, $22, $23, $24)
+                              $20, $21, $22, $23, $24, $25)
                     """,
                     record_id,
                     timestamp,
@@ -417,8 +464,8 @@ class PgStorage(StorageBackend):
                     session_id,
                     action_type.value,
                     tool_name,
-                    _serialize_json(processed_input),
-                    _serialize_json(processed_output),
+                    _serialize_json(encrypted_input),
+                    _serialize_json(encrypted_output),
                     input_hash,
                     output_hash,
                     _serialize_json(context),
@@ -431,6 +478,7 @@ class PgStorage(StorageBackend):
                     _serialize_json(redacted_fields),
                     signature,
                     signer_pk,
+                    resolved_org_id,
                 )
 
         # Create record object
@@ -538,6 +586,23 @@ class PgStorage(StorageBackend):
 
             record_id = uuid4()
 
+            # Encrypt sensitive fields at rest
+            def _encrypt_dict(data, sensitivity_level):
+                if data is None:
+                    return None
+                result = {}
+                for key, value in data.items():
+                    if isinstance(value, str) and should_encrypt_field(key, sensitivity_level):
+                        result[key] = encrypt_field(value)
+                    elif isinstance(value, dict):
+                        result[key] = _encrypt_dict(value, sensitivity_level)
+                    else:
+                        result[key] = value
+                return result
+
+            encrypted_input = _encrypt_dict(processed_input, sensitivity)
+            encrypted_output = _encrypt_dict(processed_output, sensitivity)
+
             processed.append(
                 {
                     "action_type": action_type,
@@ -547,6 +612,8 @@ class PgStorage(StorageBackend):
                     "tool_name": tool_name,
                     "processed_input": processed_input,
                     "processed_output": processed_output,
+                    "encrypted_input": encrypted_input,
+                    "encrypted_output": encrypted_output,
                     "input_hash": input_hash,
                     "output_hash": output_hash,
                     "timestamp": timestamp,
@@ -592,6 +659,9 @@ class PgStorage(StorageBackend):
                         signature = sign_record_hash(record_hash, signing_key)
                         signer_pk = get_public_key_hex()
 
+                    # Resolve org_id: prefer explicit, fall back to env var
+                    resolved_org_id = rec.get("org_id") or os.getenv("MCP_WITNESS_ORG_ID") or None
+
                     await conn.execute(
                         """
                         INSERT INTO witness_records (
@@ -601,10 +671,11 @@ class PgStorage(StorageBackend):
                             input_hash, output_hash,
                             context, reasoning, confidence,
                             sensitivity, retention_days, tsa_receipt, anchored_at,
-                            redacted_fields, signature, signer_public_key
+                            redacted_fields, signature, signer_public_key,
+                            org_id
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                                   $11, $12, $13, $14, $15, $16, $17, $18, $19,
-                                  $20, $21, $22, $23, $24)
+                                  $20, $21, $22, $23, $24, $25)
                         """,
                         rec["record_id"],
                         rec["timestamp"],
@@ -616,8 +687,8 @@ class PgStorage(StorageBackend):
                         rec["session_id"],
                         action_type.value,
                         rec["tool_name"],
-                        _serialize_json(rec["processed_input"]),
-                        _serialize_json(rec["processed_output"]),
+                        _serialize_json(rec["encrypted_input"]),
+                        _serialize_json(rec["encrypted_output"]),
                         rec["input_hash"],
                         rec["output_hash"],
                         _serialize_json(rec["context"]),
@@ -630,6 +701,7 @@ class PgStorage(StorageBackend):
                         _serialize_json(rec["redact_fields_list"]),
                         signature,
                         signer_pk,
+                        resolved_org_id,
                     )
 
                     record = WitnessRecord(
@@ -738,6 +810,42 @@ class PgStorage(StorageBackend):
                 LIMIT {limit_ph} OFFSET {offset_ph}
                 """,
                 *params,
+            )
+            return [self._row_to_record(row) for row in rows]
+
+    async def search(
+        self,
+        query: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[WitnessRecord]:
+        """Search records using LIKE pattern matching.
+
+        Searches across reasoning, input_data, and output_data fields
+        using LIKE operators on the JSONB text representation.
+
+        Args:
+            query: Search string (used with LIKE '%query%')
+            limit: Maximum records to return (default 50)
+            offset: Number of records to skip (default 0)
+
+        Returns:
+            List of matching WitnessRecords sorted by sequence DESC
+        """
+        pattern = f"%{query}%"
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM witness_records
+                WHERE reasoning LIKE $1
+                   OR input_data::text LIKE $1
+                   OR output_data::text LIKE $1
+                ORDER BY sequence DESC
+                LIMIT $2 OFFSET $3
+                """,
+                pattern,
+                limit,
+                offset,
             )
             return [self._row_to_record(row) for row in rows]
 
@@ -1041,6 +1149,89 @@ class PgStorage(StorageBackend):
                 """)
             parts = result.split()
             return int(parts[1]) if len(parts) == 2 else 0
+
+    async def redact_record(
+        self,
+        record_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        reason: str = "",
+    ) -> dict:
+        """Redact records for GDPR right to erasure.
+
+        Instead of deleting (which breaks chain integrity), this nulls
+        the data fields and marks the record as redacted. The hash chain
+        remains intact since we don't alter prev_hash or record_hash.
+
+        Args:
+            record_id: Single record to redact
+            session_id: All records in this session to redact (GDPR right to erasure)
+            reason: Why the redaction is being done (required for audit)
+
+        Returns:
+            Dict with redaction summary
+        """
+        if not record_id and not session_id:
+            raise ValueError("Must provide record_id or session_id")
+
+        if record_id and session_id:
+            raise ValueError("Provide record_id or session_id, not both")
+
+        redacted_ids: list[str] = []
+
+        async with self._pool.acquire() as conn:
+            if record_id:
+                result = await conn.execute(
+                    """
+                    UPDATE witness_records
+                    SET input_data = NULL,
+                        output_data = NULL,
+                        reasoning = '[REDACTED: ' || $1 || ']',
+                        context = NULL,
+                        redacted_fields = $2::jsonb
+                    WHERE id = $3::uuid
+                    """,
+                    reason,
+                    json.dumps(["*GDPR_ERASURE*"]),
+                    record_id,
+                )
+                parts = result.split()
+                affected = int(parts[1]) if len(parts) == 2 else 0
+                if affected > 0:
+                    redacted_ids.append(str(record_id))
+
+            elif session_id:
+                # Get the IDs first
+                rows = await conn.fetch(
+                    "SELECT id FROM witness_records WHERE session_id = $1",
+                    session_id,
+                )
+                row_ids = [str(r["id"]) for r in rows]
+
+                if row_ids:
+                    await conn.execute(
+                        """
+                        UPDATE witness_records
+                        SET input_data = NULL,
+                            output_data = NULL,
+                            reasoning = '[REDACTED: ' || $1 || ']',
+                            context = NULL,
+                            redacted_fields = $2::jsonb
+                        WHERE session_id = $3
+                        """,
+                        reason,
+                        json.dumps(["*GDPR_ERASURE*"]),
+                        session_id,
+                    )
+                    redacted_ids = row_ids
+
+        return {
+            "action": "redact",
+            "reason": reason,
+            "redacted_count": len(redacted_ids),
+            "redacted_ids": redacted_ids,
+            "note": "Data fields nulled for GDPR right to erasure. "
+            "Hash chain integrity preserved (record hashes unchanged).",
+        }
 
     # =========================================================================
     # Checkpoint Methods
@@ -1537,20 +1728,49 @@ class PgStorage(StorageBackend):
         return is_new
 
     async def _cleanup_expired_nonces(self) -> int:
-        """Remove nonces that have exceeded max TTL (24 hours)."""
+        """Remove nonces that have exceeded their per-row TTL.
+
+        Deletes rows where created_at + ttl_seconds < now, respecting the
+        per-row ``ttl_seconds`` value rather than a single global cutoff.
+        Also applies a maximum safety bound of 86400 seconds (24 hours)
+        to catch any rows with corrupted/default TTLs.
+        """
         from datetime import timedelta
 
-        max_ttl = 86400  # 24 hours in seconds
         now = datetime.now(timezone.utc)
-        delete_before = now - timedelta(seconds=max_ttl)
 
         async with self._pool.acquire() as conn:
+            # 1) Delete rows past their per-row ttl_seconds
             result = await conn.execute(
+                """
+                DELETE FROM witness_idempotency_nonces
+                WHERE created_at + (ttl_seconds || ' seconds')::INTERVAL < $1
+                """,
+                now,
+            )
+            parts = result.split()
+            per_row_deleted = int(parts[1]) if len(parts) == 2 else 0
+
+            # 2) Safety bound: also remove anything older than 24 hours
+            safety_ttl = 86400  # 24 hours
+            delete_before = now - timedelta(seconds=safety_ttl)
+            result2 = await conn.execute(
                 "DELETE FROM witness_idempotency_nonces WHERE created_at < $1",
                 delete_before,
             )
-            parts = result.split()
-            return int(parts[1]) if len(parts) == 2 else 0
+            parts2 = result2.split()
+            safety_deleted = int(parts2[1]) if len(parts2) == 2 else 0
+
+            total = per_row_deleted + safety_deleted
+            if total > 0:
+                logger.info(
+                    "cleanup_expired_nonces: deleted %d nonces (per-row TTL: %d, safety bound: %d)",
+                    total,
+                    per_row_deleted,
+                    safety_deleted,
+                )
+
+            return total
 
     async def get_anchor_stats(self) -> dict:
         """Get anchoring statistics."""

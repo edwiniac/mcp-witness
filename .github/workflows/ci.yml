@@ -114,6 +114,38 @@ jobs:
         run: |
           pytest tests/ -q -k "pg" -v
 
+  # ── SAST (Static Application Security Testing) ─────────────────────────────
+  sast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v4
+      - name: Install bandit
+        run: uv pip install --system bandit
+      - name: Run bandit SAST
+        run: bandit -r src/ -c pyproject.toml
+
+  # ── Type check ─────────────────────────────────────────────────────────────
+  typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v4
+      - name: Install mypy
+        run: uv pip install --system mypy
+      - name: Install package
+        run: uv pip install --system -e .
+      - name: Run mypy type check
+        run: mypy src/mcp_witness/ --ignore-missing-imports
+
   # ── Security audit ─────────────────────────────────────────────────────────
   security:
     runs-on: ubuntu-latest
