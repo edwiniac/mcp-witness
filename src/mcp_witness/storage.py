@@ -15,13 +15,21 @@ from uuid import UUID
 import aiosqlite
 
 from .anchoring import AnchorReceipt, AnchorService, AnchorType
+from .crypto_agility import (
+    CURRENT_SIGNING_ALGO,
+    _parse_sig_data,
+    detect_signature_format,
+)
 from .hasher import (
     GENESIS_HASH,
+    canonicalize_record_fields,
     compute_record_hash,
     hash_data,
-    sign_record_hash,
+    sign_canonical_payload,
+    verify_canonical_signature,
     verify_record_signature,
 )
+from .key_lifecycle import get_trust_store
 from .merkle import (
     MerkleTree,
     build_merkle_tree,
@@ -47,6 +55,7 @@ from .security import (
     get_hmac_key,
     get_public_key_hex,
     get_signing_key,
+    get_signing_key_id,
     should_encrypt_field,
     validate_inputs,
 )
@@ -120,6 +129,8 @@ class SqliteStorage(StorageBackend):
         self._db: Optional[aiosqlite.Connection] = None
         self._nonce_insert_count = 0
         self._record_insert_count = 0
+        self._chain_valid_at_startup: Optional[bool] = None
+        self._last_record_hash: Optional[str] = None
 
     async def connect(self) -> None:
         """Connect to the database and ensure schema exists."""
@@ -128,9 +139,31 @@ class SqliteStorage(StorageBackend):
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA busy_timeout=5000")
         await self._create_schema()
+        await self._migrate_schema_for_crypto_hardening()
         await self._check_schema_version()
         # Run cleanup on startup to remove any expired records
         await self.cleanup_expired()
+
+        # Startup chain verification
+        result = await self.verify_chain_fast()
+        self._chain_valid_at_startup = result.valid
+        if result.valid:
+            logger.info(
+                "Startup chain verification: %d records checked, chain is VALID",
+                result.records_checked,
+            )
+        else:
+            logger.critical(
+                "Startup chain verification FAILED: chain integrity issue detected! "
+                "%d records checked, %d issues found",
+                result.records_checked,
+                len(result.issues),
+            )
+
+        # Cache last record hash for runtime invariant checking
+        last_record = await self._get_last_record()
+        if last_record:
+            self._last_record_hash = last_record["record_hash"]
 
     async def close(self) -> None:
         """Close the database connection."""
@@ -294,17 +327,36 @@ class SqliteStorage(StorageBackend):
         """Run incremental schema migrations.
 
         Each version step adds ALTER TABLE or other DDL needed.
-        Currently at version 1 with no pending migrations.
         """
-        # Future migrations go here as if/elif blocks:
-        #
-        # if from_version < 2:
-        #     await self._db.execute(
-        #         "ALTER TABLE witness_records ADD COLUMN new_column TEXT"
-        #     )
-        # if from_version < 3:
-        #     ...
-        pass
+        if from_version < 2:
+            try:
+                await self._db.execute(
+                    "ALTER TABLE witness_records ADD COLUMN canonical_payload TEXT"
+                )
+            except Exception:
+                logger.debug("canonical_payload column already exists")
+            try:
+                await self._db.execute(
+                    "ALTER TABLE witness_records ADD COLUMN signer_key_id TEXT"
+                )
+            except Exception:
+                logger.debug("signer_key_id column already exists")
+
+    async def _migrate_schema_for_crypto_hardening(self) -> None:
+        """Add crypto hardening columns if they don't exist (non-versioned migration)."""
+        try:
+            await self._db.execute(
+                "ALTER TABLE witness_records ADD COLUMN canonical_payload TEXT"
+            )
+        except Exception:
+            pass
+        try:
+            await self._db.execute(
+                "ALTER TABLE witness_records ADD COLUMN signer_key_id TEXT"
+            )
+        except Exception:
+            pass
+        await self._db.commit()
 
     async def _get_last_record(self) -> Optional[dict]:
         """Get the last record in the chain."""
@@ -448,13 +500,36 @@ class SqliteStorage(StorageBackend):
                     hmac_key=get_hmac_key(),
                 )
 
-                # Sign record for non-repudiation (only if signing key is configured)
+                # Canonical payload for versioned signing
+                canonical_bytes = canonicalize_record_fields(
+                    prev_hash=prev_hash,
+                    sequence=sequence,
+                    timestamp=timestamp.isoformat(),
+                    action_type=action_type.value,
+                    actor_id=actor_id,
+                    input_hash=input_hash,
+                    output_hash=output_hash,
+                    tool_name=tool_name,
+                )
+
+                # Sign record for non-repudiation (versioned signing)
                 signing_key = get_signing_key()
                 signature = None
                 signer_pk = None
+                canonical_payload_hex = None
+                signer_key_id = None
                 if signing_key is not None:
-                    signature = sign_record_hash(record_hash, signing_key)
+                    key_id = get_signing_key_id()
+                    sig_data = sign_canonical_payload(
+                        canonical_bytes,
+                        signing_key,
+                        CURRENT_SIGNING_ALGO.value,
+                        key_id=key_id,
+                    )
+                    signature = json.dumps(sig_data)  # Store as JSON string
                     signer_pk = get_public_key_hex()
+                    canonical_payload_hex = canonical_bytes.hex()
+                    signer_key_id = key_id
 
                 # Resolve org_id: prefer explicit, fall back to env var
                 resolved_org_id = org_id or os.getenv("MCP_WITNESS_ORG_ID") or None
@@ -469,8 +544,8 @@ class SqliteStorage(StorageBackend):
                         context, reasoning, confidence,
                         sensitivity, retention_days, tsa_receipt, anchored_at,
                         redacted_fields, signature, signer_public_key,
-                        org_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        org_id, canonical_payload, signer_key_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         str(record_id),
@@ -498,18 +573,37 @@ class SqliteStorage(StorageBackend):
                         signature,
                         signer_pk,
                         resolved_org_id,
+                        canonical_payload_hex,
+                        signer_key_id,
                     ),
                 )
 
                 await self._db.commit()
-                return sequence, prev_hash, record_hash, signature, signer_pk
+                return sequence, prev_hash, record_hash, signature, signer_pk, canonical_payload_hex, signer_key_id
             except Exception:
                 await self._db.execute("ROLLBACK")
                 raise
 
-        sequence, prev_hash, record_hash, signature, signer_pk = await self._retry_on_busy(
-            _do_insert
-        )
+        (
+            sequence,
+            prev_hash,
+            record_hash,
+            signature,
+            signer_pk,
+            canonical_payload_hex,
+            signer_key_id,
+        ) = await self._retry_on_busy(_do_insert)
+
+        # Runtime invariant: check prev_hash chain is intact
+        if self._last_record_hash is not None and prev_hash != self._last_record_hash:
+            logger.critical(
+                "CHAIN INVARIANT BROKEN at sequence %d: "
+                "expected prev_hash=%s, got %s. Chain may be forked!",
+                sequence,
+                self._last_record_hash[:16],
+                prev_hash[:16],
+            )
+        self._last_record_hash = record_hash
 
         # Create record object
         record = WitnessRecord(
@@ -535,6 +629,8 @@ class SqliteStorage(StorageBackend):
             signature=signature,
             signer_public_key=signer_pk,
             redacted_fields=redacted_fields,
+            canonical_payload=canonical_payload_hex,
+            signer_key_id=signer_key_id,
         )
 
         # Check if we should create a checkpoint (outside the transaction)
@@ -693,12 +789,35 @@ class SqliteStorage(StorageBackend):
                         hmac_key=hmac_key,
                     )
 
-                    # Sign record for non-repudiation (only if signing key is configured)
+                    # Canonical payload for versioned signing
+                    canonical_bytes = canonicalize_record_fields(
+                        prev_hash=prev_hash,
+                        sequence=sequence,
+                        timestamp=rec["timestamp"].isoformat(),
+                        action_type=action_type.value,
+                        actor_id=rec["actor_id"],
+                        input_hash=rec["input_hash"],
+                        output_hash=rec["output_hash"],
+                        tool_name=rec["tool_name"],
+                    )
+
+                    # Sign record for non-repudiation (versioned signing)
                     signature = None
                     signer_pk = None
+                    canonical_payload_hex = None
+                    signer_key_id = None
                     if signing_key is not None:
-                        signature = sign_record_hash(record_hash, signing_key)
+                        key_id = get_signing_key_id()
+                        sig_data = sign_canonical_payload(
+                            canonical_bytes,
+                            signing_key,
+                            CURRENT_SIGNING_ALGO.value,
+                            key_id=key_id,
+                        )
+                        signature = json.dumps(sig_data)  # Store as JSON string
                         signer_pk = get_public_key_hex()
+                        canonical_payload_hex = canonical_bytes.hex()
+                        signer_key_id = key_id
 
                     await self._db.execute(
                         """
@@ -709,8 +828,9 @@ class SqliteStorage(StorageBackend):
                             input_hash, output_hash,
                             context, reasoning, confidence,
                             sensitivity, retention_days, tsa_receipt, anchored_at,
-                            redacted_fields, signature, signer_public_key
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            redacted_fields, signature, signer_public_key,
+                            canonical_payload, signer_key_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             str(rec["record_id"]),
@@ -741,6 +861,8 @@ class SqliteStorage(StorageBackend):
                             json.dumps(rec["redact_fields_list"]),
                             signature,
                             signer_pk,
+                            canonical_payload_hex,
+                            signer_key_id,
                         ),
                     )
 
@@ -767,6 +889,8 @@ class SqliteStorage(StorageBackend):
                         signature=signature,
                         signer_public_key=signer_pk,
                         redacted_fields=rec["redact_fields_list"],
+                        canonical_payload=canonical_payload_hex,
+                        signer_key_id=signer_key_id,
                     )
                     result_records.append(record)
 
@@ -982,15 +1106,77 @@ class SqliteStorage(StorageBackend):
             if record.signature and record.signer_public_key:
                 try:
                     pk_bytes = bytes.fromhex(record.signer_public_key)
-                    if not verify_record_signature(
-                        record.record_hash,
-                        record.signature,
-                        pk_bytes,
-                    ):
+
+                    # Detect signature format
+                    sig_fmt = detect_signature_format(record.signature)
+
+                    if sig_fmt in ("versioned", "legacy"):
+                        sig_data = _parse_sig_data(record.signature)
+
+                        # Check key revocation
+                        if record.signer_key_id:
+                            trust_store = get_trust_store()
+                            if trust_store.is_revoked(record.signer_key_id):
+                                if first_invalid is None:
+                                    first_invalid = record.sequence
+                                issues.append(
+                                    f"Key {record.signer_key_id} is REVOKED at "
+                                    f"sequence {record.sequence}"
+                                )
+
+                        # Verify canonical signature if canonical_payload is present
+                        if record.canonical_payload:
+                            try:
+                                canonical_bytes = bytes.fromhex(record.canonical_payload)
+                                if not verify_canonical_signature(
+                                    canonical_bytes, sig_data, pk_bytes
+                                ):
+                                    if first_invalid is None:
+                                        first_invalid = record.sequence
+                                    issues.append(
+                                        f"Canonical signature verification failed at "
+                                        f"sequence {record.sequence}"
+                                    )
+                            except Exception:
+                                if first_invalid is None:
+                                    first_invalid = record.sequence
+                                issues.append(
+                                    f"Canonical payload data error at "
+                                    f"sequence {record.sequence}"
+                                )
+                        else:
+                            # Legacy: bare record_hash signature
+                            if sig_fmt == "legacy":
+                                if not verify_record_signature(
+                                    record.record_hash,
+                                    record.signature,
+                                    pk_bytes,
+                                ):
+                                    if first_invalid is None:
+                                        first_invalid = record.sequence
+                                    issues.append(
+                                        f"Ed25519 signature verification failed at "
+                                        f"sequence {record.sequence}"
+                                    )
+                            else:
+                                # Versioned sig without canonical_payload — try record_hash
+                                sig_hex = sig_data.get("signature", "")
+                                if not verify_record_signature(
+                                    record.record_hash,
+                                    sig_hex,
+                                    pk_bytes,
+                                ):
+                                    if first_invalid is None:
+                                        first_invalid = record.sequence
+                                    issues.append(
+                                        f"Ed25519 signature verification failed at "
+                                        f"sequence {record.sequence}"
+                                    )
+                    else:
                         if first_invalid is None:
                             first_invalid = record.sequence
                         issues.append(
-                            f"Ed25519 signature verification failed at sequence {record.sequence}"
+                            f"Unknown signature format at sequence {record.sequence}"
                         )
                 except Exception:
                     if first_invalid is None:
@@ -1287,6 +1473,7 @@ class SqliteStorage(StorageBackend):
             "checkpoint_id": row["id"],
             "proof_path": proof.proof_path,
             "leaf_index": proof.leaf_index,
+            "tree_size": tree.leaf_count,  # included for strict verification
         }
 
     async def verify_single_record(self, sequence: int) -> bool:
@@ -1957,6 +2144,12 @@ class SqliteStorage(StorageBackend):
             signature=row["signature"] if "signature" in row.keys() else None,
             signer_public_key=(
                 row["signer_public_key"] if "signer_public_key" in row.keys() else None
+            ),
+            canonical_payload=(
+                row["canonical_payload"] if "canonical_payload" in row.keys() else None
+            ),
+            signer_key_id=(
+                row["signer_key_id"] if "signer_key_id" in row.keys() else None
             ),
             redacted_fields=json.loads(row["redacted_fields"]) if row["redacted_fields"] else [],
         )

@@ -13,13 +13,21 @@ from uuid import UUID
 import asyncpg
 
 from .anchoring import AnchorReceipt, AnchorService, AnchorType
+from .crypto_agility import (
+    CURRENT_SIGNING_ALGO,
+    _parse_sig_data,
+    detect_signature_format,
+)
 from .hasher import (
     GENESIS_HASH,
+    canonicalize_record_fields,
     compute_record_hash,
     hash_data,
-    sign_record_hash,
+    sign_canonical_payload,
+    verify_canonical_signature,
     verify_record_signature,
 )
+from .key_lifecycle import get_trust_store
 from .merkle import (
     MerkleTree,
     build_merkle_tree,
@@ -45,6 +53,7 @@ from .security import (
     get_hmac_key,
     get_public_key_hex,
     get_signing_key,
+    get_signing_key_id,
     should_encrypt_field,
     validate_inputs,
 )
@@ -131,6 +140,8 @@ class PgStorage(StorageBackend):
         self._pool: Optional[asyncpg.Pool] = None
         self._anchor_service: Optional[AnchorService] = None
         self._nonce_insert_count = 0
+        self._chain_valid_at_startup: Optional[bool] = None
+        self._last_record_hash: Optional[str] = None
 
     async def connect(self) -> None:
         """Connect to PostgreSQL and ensure schema exists."""
@@ -140,7 +151,30 @@ class PgStorage(StorageBackend):
             max_size=PG_POOL_MAX_SIZE,
         )
         await self._create_schema()
+        await self._migrate_schema_for_crypto_hardening()
         self._anchor_service = AnchorService()
+
+        # Startup chain verification
+        result = await self.verify_chain_fast()
+        self._chain_valid_at_startup = result.valid
+        if result.valid:
+            logger.info(
+                "Startup chain verification: %d records checked, chain is VALID",
+                result.records_checked,
+            )
+        else:
+            logger.critical(
+                "Startup chain verification FAILED: chain integrity issue detected! "
+                "%d records checked, %d issues found",
+                result.records_checked,
+                len(result.issues),
+            )
+
+        # Cache last record hash for runtime invariant checking
+        async with self._pool.acquire() as conn:
+            last_record = await self._get_last_record(conn)
+            if last_record:
+                self._last_record_hash = last_record["record_hash"]
 
     async def close(self) -> None:
         """Close the PostgreSQL connection pool."""
@@ -182,6 +216,9 @@ class PgStorage(StorageBackend):
                     redacted_fields JSONB,
                     signature TEXT,
                     signer_public_key TEXT,
+
+                    canonical_payload TEXT,
+                    signer_key_id TEXT,
 
                     org_id TEXT DEFAULT NULL,
 
@@ -265,6 +302,24 @@ class PgStorage(StorageBackend):
                     1,
                 )
 
+    async def _migrate_schema_for_crypto_hardening(self) -> None:
+        """Add crypto hardening columns if they don't exist."""
+        async with self._pool.acquire() as conn:
+            for col in ("canonical_payload", "signer_key_id"):
+                try:
+                    await conn.execute(
+                        f"ALTER TABLE witness_records ADD COLUMN IF NOT EXISTS {col} TEXT"
+                    )
+                except Exception:
+                    logger.debug("Column %s already exists (or PG < 9.6 without IF NOT EXISTS)", col)
+                    # Fallback for older PG versions
+                    try:
+                        await conn.execute(
+                            f"ALTER TABLE witness_records ADD COLUMN {col} TEXT"
+                        )
+                    except Exception:
+                        pass
+
     # =========================================================================
     # Internal Helpers
     # =========================================================================
@@ -324,6 +379,8 @@ class PgStorage(StorageBackend):
             anchored_at=row.get("anchored_at"),
             signature=row.get("signature"),
             signer_public_key=row.get("signer_public_key"),
+            canonical_payload=row.get("canonical_payload"),
+            signer_key_id=row.get("signer_key_id"),
             org_id=row.get("org_id"),
             redacted_fields=_deserialize_json(row.get("redacted_fields")) or [],
         )
@@ -432,9 +489,31 @@ class PgStorage(StorageBackend):
                 signing_key = get_signing_key()
                 signature = None
                 signer_pk = None
+                canonical_payload_hex = None
+                signer_key_id = None
                 if signing_key is not None:
-                    signature = sign_record_hash(record_hash, signing_key)
+                    key_id = get_signing_key_id()
+                    # Canonical payload for versioned signing
+                    canonical_bytes = canonicalize_record_fields(
+                        prev_hash=prev_hash,
+                        sequence=sequence,
+                        timestamp=timestamp.isoformat(),
+                        action_type=action_type.value,
+                        actor_id=actor_id,
+                        input_hash=input_hash,
+                        output_hash=output_hash,
+                        tool_name=tool_name,
+                    )
+                    sig_data = sign_canonical_payload(
+                        canonical_bytes,
+                        signing_key,
+                        CURRENT_SIGNING_ALGO.value,
+                        key_id=key_id,
+                    )
+                    signature = json.dumps(sig_data)  # Store as JSON string
                     signer_pk = get_public_key_hex()
+                    canonical_payload_hex = canonical_bytes.hex()
+                    signer_key_id = key_id
 
                 # Resolve org_id: prefer explicit, fall back to env var
                 resolved_org_id = org_id or os.getenv("MCP_WITNESS_ORG_ID") or None
@@ -449,10 +528,10 @@ class PgStorage(StorageBackend):
                         context, reasoning, confidence,
                         sensitivity, retention_days, tsa_receipt, anchored_at,
                         redacted_fields, signature, signer_public_key,
-                        org_id
+                        org_id, canonical_payload, signer_key_id
                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                               $11, $12, $13, $14, $15, $16, $17, $18, $19,
-                              $20, $21, $22, $23, $24, $25)
+                              $20, $21, $22, $23, $24, $25, $26, $27)
                     """,
                     record_id,
                     timestamp,
@@ -479,7 +558,20 @@ class PgStorage(StorageBackend):
                     signature,
                     signer_pk,
                     resolved_org_id,
+                    canonical_payload_hex,
+                    signer_key_id,
                 )
+
+        # Runtime invariant: check prev_hash chain is intact
+        if self._last_record_hash is not None and prev_hash != self._last_record_hash:
+            logger.critical(
+                "CHAIN INVARIANT BROKEN at sequence %d: "
+                "expected prev_hash=%s, got %s. Chain may be forked!",
+                sequence,
+                self._last_record_hash[:16],
+                prev_hash[:16],
+            )
+        self._last_record_hash = record_hash
 
         # Create record object
         record = WitnessRecord(
@@ -504,6 +596,8 @@ class PgStorage(StorageBackend):
             retention_days=retention_days,
             signature=signature,
             signer_public_key=signer_pk,
+            canonical_payload=canonical_payload_hex,
+            signer_key_id=signer_key_id,
             redacted_fields=redacted_fields,
         )
 
@@ -652,12 +746,35 @@ class PgStorage(StorageBackend):
                         hmac_key=hmac_key,
                     )
 
-                    # Sign record for non-repudiation (only if signing key is configured)
+                    # Canonical payload for versioned signing
+                    canonical_bytes = canonicalize_record_fields(
+                        prev_hash=prev_hash,
+                        sequence=sequence,
+                        timestamp=rec["timestamp"].isoformat(),
+                        action_type=action_type.value,
+                        actor_id=rec["actor_id"],
+                        input_hash=rec["input_hash"],
+                        output_hash=rec["output_hash"],
+                        tool_name=rec["tool_name"],
+                    )
+
+                    # Sign record for non-repudiation (versioned signing)
                     signature = None
                     signer_pk = None
+                    canonical_payload_hex = None
+                    signer_key_id = None
                     if signing_key is not None:
-                        signature = sign_record_hash(record_hash, signing_key)
+                        key_id = get_signing_key_id()
+                        sig_data = sign_canonical_payload(
+                            canonical_bytes,
+                            signing_key,
+                            CURRENT_SIGNING_ALGO.value,
+                            key_id=key_id,
+                        )
+                        signature = json.dumps(sig_data)  # Store as JSON string
                         signer_pk = get_public_key_hex()
+                        canonical_payload_hex = canonical_bytes.hex()
+                        signer_key_id = key_id
 
                     # Resolve org_id: prefer explicit, fall back to env var
                     resolved_org_id = rec.get("org_id") or os.getenv("MCP_WITNESS_ORG_ID") or None
@@ -672,10 +789,10 @@ class PgStorage(StorageBackend):
                             context, reasoning, confidence,
                             sensitivity, retention_days, tsa_receipt, anchored_at,
                             redacted_fields, signature, signer_public_key,
-                            org_id
+                            org_id, canonical_payload, signer_key_id
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                                   $11, $12, $13, $14, $15, $16, $17, $18, $19,
-                                  $20, $21, $22, $23, $24, $25)
+                                  $20, $21, $22, $23, $24, $25, $26, $27)
                         """,
                         rec["record_id"],
                         rec["timestamp"],
@@ -702,6 +819,8 @@ class PgStorage(StorageBackend):
                         signature,
                         signer_pk,
                         resolved_org_id,
+                        canonical_payload_hex,
+                        signer_key_id,
                     )
 
                     record = WitnessRecord(
@@ -726,6 +845,8 @@ class PgStorage(StorageBackend):
                         retention_days=rec["retention_days"],
                         signature=signature,
                         signer_public_key=signer_pk,
+                        canonical_payload=canonical_payload_hex,
+                        signer_key_id=signer_key_id,
                         redacted_fields=rec["redact_fields_list"],
                     )
                     result_records.append(record)
@@ -940,15 +1061,76 @@ class PgStorage(StorageBackend):
                 if record.signature and record.signer_public_key:
                     try:
                         pk_bytes = bytes.fromhex(record.signer_public_key)
-                        if not verify_record_signature(
-                            record.record_hash,
-                            record.signature,
-                            pk_bytes,
-                        ):
+
+                        # Detect signature format
+                        sig_fmt = detect_signature_format(record.signature)
+
+                        if sig_fmt in ("versioned", "legacy"):
+                            sig_data = _parse_sig_data(record.signature)
+
+                            # Check key revocation
+                            if record.signer_key_id:
+                                trust_store = get_trust_store()
+                                if trust_store.is_revoked(record.signer_key_id):
+                                    if first_invalid is None:
+                                        first_invalid = record.sequence
+                                    issues.append(
+                                        f"Key {record.signer_key_id} is REVOKED at "
+                                        f"sequence {record.sequence}"
+                                    )
+
+                            # Verify canonical signature if canonical_payload is present
+                            if record.canonical_payload:
+                                try:
+                                    canonical_bytes = bytes.fromhex(record.canonical_payload)
+                                    if not verify_canonical_signature(
+                                        canonical_bytes, sig_data, pk_bytes
+                                    ):
+                                        if first_invalid is None:
+                                            first_invalid = record.sequence
+                                        issues.append(
+                                            f"Canonical signature verification failed at "
+                                            f"sequence {record.sequence}"
+                                        )
+                                except Exception:
+                                    if first_invalid is None:
+                                        first_invalid = record.sequence
+                                    issues.append(
+                                        f"Canonical payload data error at "
+                                        f"sequence {record.sequence}"
+                                    )
+                            else:
+                                # Legacy: bare record_hash signature
+                                if sig_fmt == "legacy":
+                                    if not verify_record_signature(
+                                        record.record_hash,
+                                        record.signature,
+                                        pk_bytes,
+                                    ):
+                                        if first_invalid is None:
+                                            first_invalid = record.sequence
+                                        issues.append(
+                                            f"Ed25519 signature verification failed at "
+                                            f"sequence {record.sequence}"
+                                        )
+                                else:
+                                    sig_hex = sig_data.get("signature", "")
+                                    if not verify_record_signature(
+                                        record.record_hash,
+                                        sig_hex,
+                                        pk_bytes,
+                                    ):
+                                        if first_invalid is None:
+                                            first_invalid = record.sequence
+                                        issues.append(
+                                            f"Ed25519 signature verification failed at "
+                                            f"sequence {record.sequence}"
+                                        )
+                        else:
                             if first_invalid is None:
                                 first_invalid = record.sequence
                             issues.append(
-                                f"Ed25519 signature verification failed at sequence {record.sequence}"
+                                f"Unknown signature format at sequence {record.sequence}"
                             )
                     except Exception:
                         if first_invalid is None:
@@ -1392,6 +1574,7 @@ class PgStorage(StorageBackend):
                 "checkpoint_id": row["id"],
                 "proof_path": proof.proof_path,
                 "leaf_index": proof.leaf_index,
+                "tree_size": tree.leaf_count,  # included for strict verification
             }
 
     async def verify_single_record(self, sequence: int) -> bool:

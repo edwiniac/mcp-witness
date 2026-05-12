@@ -267,3 +267,97 @@ def verify_record_signature(
         return True
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Canonicalized Signing Payload
+# ---------------------------------------------------------------------------
+
+
+def canonicalize_record_fields(
+    prev_hash: str,
+    sequence: int,
+    timestamp: str,
+    action_type: str,
+    actor_id: str,
+    input_hash: str,
+    output_hash: str,
+    tool_name: Optional[str] = None,
+) -> bytes:
+    """Produce a deterministic canonical byte string for signing.
+
+    Uses JSON with sorted keys, no whitespace, UTF-8 encoding.
+    All fields are included in a fixed order for determinism.
+
+    Args:
+        prev_hash: Hash of the previous record in the chain.
+        sequence: Monotonic sequence number.
+        timestamp: ISO 8601 timestamp string.
+        action_type: Type of action.
+        actor_id: Identifier of the actor.
+        input_hash: SHA-256 of input data.
+        output_hash: SHA-256 of output data.
+        tool_name: Optional name of the tool called.
+
+    Returns:
+        UTF-8 encoded canonical JSON bytes.
+    """
+    payload = {
+        "v": 1,  # canonicalization version
+        "prev_hash": prev_hash,
+        "sequence": sequence,
+        "timestamp": timestamp,
+        "action_type": action_type,
+        "actor_id": actor_id,
+        "input_hash": input_hash,
+        "output_hash": output_hash,
+    }
+    if tool_name:
+        payload["tool_name"] = tool_name
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def sign_canonical_payload(
+    canonical_bytes: bytes,
+    signing_key,
+    algo: str,
+    key_id: Optional[str] = None,
+) -> dict:
+    """Sign a canonical payload. Returns versioned signature dict.
+
+    Hashes the canonical bytes first, then signs the hash.
+
+    Args:
+        canonical_bytes: Deterministic canonical byte string.
+        signing_key: An ``Ed25519PrivateKey`` instance.
+        algo: Algorithm identifier string.
+        key_id: Optional key identifier.
+
+    Returns:
+        Versioned signature dict (see ``versioned_sign``).
+    """
+    from .crypto_agility import versioned_sign
+
+    payload_hash = hashlib.sha256(canonical_bytes).hexdigest()
+    return versioned_sign(payload_hash, signing_key, algo, key_id)
+
+
+def verify_canonical_signature(
+    canonical_bytes: bytes,
+    sig_data: dict,
+    public_key_bytes: bytes,
+) -> bool:
+    """Verify a signature over canonical payload bytes.
+
+    Args:
+        canonical_bytes: The canonical bytes that were signed.
+        sig_data: Versioned signature dict (or legacy hex string).
+        public_key_bytes: Raw Ed25519 public key bytes.
+
+    Returns:
+        ``True`` if the signature is valid.
+    """
+    from .crypto_agility import versioned_verify
+
+    payload_hash = hashlib.sha256(canonical_bytes).hexdigest()
+    return versioned_verify(payload_hash, sig_data, public_key_bytes)

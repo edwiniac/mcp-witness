@@ -238,6 +238,7 @@ def enforce_read_only(tool_name: str) -> None:
 _SIGNING_KEY_UNSET = object()
 _signing_key: object = _SIGNING_KEY_UNSET
 _public_key_bytes: object = _SIGNING_KEY_UNSET
+_signing_key_id: Optional[str] = None
 
 
 def get_signing_key() -> Optional[object]:
@@ -253,13 +254,16 @@ def get_signing_key() -> Optional[object]:
     cached for the process lifetime. The public key is logged at startup
     so operators can capture it for external verification.
 
+    When a trust store is configured (MCP_WITNESS_TRUST_STORE), the key_id
+    from the trust store's current key is used.
+
     The key is resolved ONCE per process lifetime (module-level lazy singleton).
 
     Returns:
         The Ed25519 private key, or ``None`` if no signing key is configured
         and auto-generation is disabled.
     """
-    global _signing_key, _public_key_bytes
+    global _signing_key, _public_key_bytes, _signing_key_id
     if _signing_key is not _SIGNING_KEY_UNSET:
         return _signing_key
 
@@ -292,7 +296,41 @@ def get_signing_key() -> Optional[object]:
         "Ed25519 public key: %s",
         _public_key_bytes.hex(),
     )
+
+    # If trust store is configured, try to resolve key_id from current key
+    try:
+        from .key_lifecycle import get_trust_store
+
+        trust_store = get_trust_store()
+        current_key_id = trust_store.get_current_key_id()
+        if current_key_id:
+            # Verify our actual public key matches the trust store entry
+            key_meta = trust_store.get_key(current_key_id)
+            if key_meta and key_meta.public_key_hex == _public_key_bytes.hex():
+                _signing_key_id = current_key_id
+            else:
+                logger.warning(
+                    "Current signing key doesn't match trust store key '%s' — "
+                    "will not assign key_id",
+                    current_key_id,
+                )
+    except Exception:
+        pass
+
     return _signing_key
+
+
+def get_signing_key_id() -> Optional[str]:
+    """Get the key_id for the active signing key, if known.
+
+    Returns:
+        The key ID string, or ``None`` if not configured or no trust store.
+    """
+    global _signing_key_id
+    if _signing_key is _SIGNING_KEY_UNSET:
+        # Trigger lazy load
+        get_signing_key()
+    return _signing_key_id
 
 
 def get_public_key_bytes() -> Optional[bytes]:

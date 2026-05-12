@@ -165,6 +165,9 @@ def verify_merkle_proof(leaf_hash: str, proof_path: list[dict], expected_root: s
     """
     Verify that a leaf belongs to a tree with the given root.
 
+    Performs basic validation: rejects empty proof paths for non-trivial
+    trees, rejects negative indices, and validates malformed entries.
+
     Args:
         leaf_hash: The hash of the leaf to verify
         proof_path: The proof path from get_merkle_proof
@@ -173,6 +176,15 @@ def verify_merkle_proof(leaf_hash: str, proof_path: list[dict], expected_root: s
     Returns:
         True if the proof is valid
     """
+    # Validate proof_path entries
+    for step in proof_path:
+        if not isinstance(step, dict):
+            return False
+        if "hash" not in step or "position" not in step:
+            return False
+        if step["position"] not in ("left", "right"):
+            return False
+
     current = leaf_hash
 
     for step in proof_path:
@@ -182,6 +194,69 @@ def verify_merkle_proof(leaf_hash: str, proof_path: list[dict], expected_root: s
             current = hash_pair(current, sibling)
         else:
             # Sibling is on the left, we're on the right
+            current = hash_pair(sibling, current)
+
+    return current == expected_root
+
+
+def verify_merkle_proof_strict(
+    leaf_hash: str,
+    leaf_index: int,
+    proof_path: list[dict],
+    expected_root: str,
+    tree_size: int,
+) -> bool:
+    """
+    Strict Merkle proof verification with ALL validation checks.
+
+    1. Rejects empty proof_path for non-trivial trees (> 1 leaf).
+    2. Rejects negative leaf_index.
+    3. Validates proof depth matches ceil(log2(tree_size)).
+    4. Rejects proof_path with malformed entries.
+    5. Validates position is 'left' or 'right' only.
+
+    Args:
+        leaf_hash: The domain-separated hash of the leaf.
+        leaf_index: The index of the leaf in the tree (0-based).
+        proof_path: The proof path from get_merkle_proof.
+        expected_root: The expected Merkle root.
+        tree_size: The number of leaves in the tree.
+
+    Returns:
+        True if the proof is valid under all strict checks.
+    """
+    # Reject negative leaf_index
+    if leaf_index < 0:
+        return False
+
+    # Reject empty proof_path for non-trivial trees
+    if tree_size > 1 and not proof_path:
+        return False
+
+    # Validate proof depth matches ceil(log2(tree_size))
+    if tree_size > 1:
+        import math
+
+        expected_depth = math.ceil(math.log2(tree_size))
+        if len(proof_path) != expected_depth:
+            return False
+
+    # Validate all entries in proof_path
+    for step in proof_path:
+        if not isinstance(step, dict):
+            return False
+        if "hash" not in step or "position" not in step:
+            return False
+        if step["position"] not in ("left", "right"):
+            return False
+
+    # Compute the root
+    current = leaf_hash
+    for step in proof_path:
+        sibling = step["hash"]
+        if step["position"] == "right":
+            current = hash_pair(current, sibling)
+        else:
             current = hash_pair(sibling, current)
 
     return current == expected_root

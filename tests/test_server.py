@@ -433,3 +433,31 @@ class TestPaginationClamping:
         result = await handle_export(temp_storage, {})
         assert "records" in result
         assert len(result["records"]) == 3
+
+
+class TestHealthCheck:
+    """Tests for health check endpoint (TASK 2.5)."""
+
+    @pytest.mark.asyncio
+    async def test_health_includes_chain_verification_status(self, temp_storage):
+        """Health endpoint includes chain_verified_at_startup field."""
+        from mcp_witness.server import handle_health
+
+        result = await handle_health(temp_storage)
+
+        assert "chain_verified_at_startup" in result
+        # Fresh storage should have valid chain at startup or None if not yet checked
+        assert result["chain_verified_at_startup"] is True or result["chain_verified_at_startup"] is None
+
+    @pytest.mark.asyncio
+    async def test_health_returns_status(self, temp_storage):
+        """Health endpoint returns operation status."""
+        from mcp_witness.server import handle_health
+
+        result = await handle_health(temp_storage)
+
+        assert "status" in result
+        assert result["status"] in ("healthy", "unhealthy")
+        assert "version" in result
+        assert "database" in result
+        assert "signing" in result

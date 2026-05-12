@@ -332,3 +332,240 @@ class TestEd25519Signing:
         sig = sign_record_hash(record_hash, private_key)
         # Ed25519 signature is 64 bytes = 128 hex chars
         assert len(sig) == 128
+
+
+class TestCryptoAgility:
+    """Tests for crypto_agility module (TASK 2.1)."""
+
+    def _make_keypair(self):
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+
+        private_key = ed25519.Ed25519PrivateKey.generate()
+        public_key_bytes = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        return private_key, public_key_bytes
+
+    def test_versioned_sign_includes_algo(self):
+        """versioned_sign returns dict with algo and signature keys."""
+        from mcp_witness.crypto_agility import (
+            CURRENT_SIGNING_ALGO,
+            versioned_sign,
+        )
+
+        private_key, _ = self._make_keypair()
+        record_hash = "abc123def456"
+
+        result = versioned_sign(record_hash, private_key, CURRENT_SIGNING_ALGO.value)
+
+        assert isinstance(result, dict)
+        assert "algo" in result
+        assert result["algo"] == "ed25519+sha256:v1"
+        assert "signature" in result
+        assert len(result["signature"]) == 128  # Ed25519 sig = 128 hex chars
+
+    def test_versioned_sign_includes_key_id(self):
+        """versioned_sign includes key_id when provided."""
+        from mcp_witness.crypto_agility import (
+            CURRENT_SIGNING_ALGO,
+            versioned_sign,
+        )
+
+        private_key, _ = self._make_keypair()
+        record_hash = "abc123"
+
+        result = versioned_sign(record_hash, private_key, CURRENT_SIGNING_ALGO.value, key_id="key-001")
+
+        assert result["key_id"] == "key-001"
+
+    def test_versioned_verify_rejects_wrong_algo(self):
+        """versioned_verify returns False for unsupported algorithm."""
+        from mcp_witness.crypto_agility import versioned_verify
+
+        _, public_key = self._make_keypair()
+
+        sig_data = {"algo": "unsupported:v999", "signature": "aa" * 64}
+        result = versioned_verify("some_hash", sig_data, public_key)
+        assert result is False
+
+    def test_versioned_verify_rejects_none_algo(self):
+        """versioned_verify trivially passes for 'none' algo."""
+        from mcp_witness.crypto_agility import versioned_verify
+
+        _, public_key = self._make_keypair()
+        sig_data = {"algo": "none", "signature": ""}
+        result = versioned_verify("some_hash", sig_data, public_key)
+        assert result is True
+
+    def test_backward_compat_bare_signature(self):
+        """versioned_verify handles legacy bare hex signatures."""
+        from mcp_witness.crypto_agility import versioned_verify
+
+        private_key, public_key = self._make_keypair()
+        record_hash = "abc123"
+        bare_sig = private_key.sign(record_hash.encode()).hex()
+
+        # Legacy: pass the hex string directly instead of a dict
+        assert versioned_verify(record_hash, bare_sig, public_key) is True
+
+        # Wrong hash should fail
+        assert versioned_verify("wrong_hash", bare_sig, public_key) is False
+
+    def test_detect_legacy_signature(self):
+        """detect_signature_format detects legacy 128-char hex."""
+        from mcp_witness.crypto_agility import detect_signature_format
+
+        assert detect_signature_format("a" * 128) == "legacy"
+        assert detect_signature_format("deadbeef" * 16) == "legacy"
+        assert detect_signature_format("a" * 64) == "unknown"  # Too short
+
+    def test_detect_versioned_signature(self):
+        """detect_signature_format detects JSON versioned format."""
+        import json
+
+        from mcp_witness.crypto_agility import detect_signature_format
+        sig = json.dumps({"algo": "ed25519+sha256:v1", "signature": "aa" * 64})
+        assert detect_signature_format(sig) == "versioned"
+
+    def test_detect_empty_or_unknown(self):
+        """detect_signature_format handles empty and unknown formats."""
+        from mcp_witness.crypto_agility import detect_signature_format
+
+        assert detect_signature_format("") == "unknown"
+        assert detect_signature_format("not-a-signature") == "unknown"
+
+
+class TestCanonicalPayload:
+    """Tests for canonicalized signing payload (TASK 2.2)."""
+
+    def test_canonicalize_deterministic(self):
+        """Same inputs produce same canonical bytes."""
+        from mcp_witness.hasher import canonicalize_record_fields
+
+        b1 = canonicalize_record_fields(
+            prev_hash="abc",
+            sequence=0,
+            timestamp="2026-01-01T00:00:00+00:00",
+            action_type="tool_call",
+            actor_id="agent-1",
+            input_hash="in123",
+            output_hash="out456",
+        )
+        b2 = canonicalize_record_fields(
+            prev_hash="abc",
+            sequence=0,
+            timestamp="2026-01-01T00:00:00+00:00",
+            action_type="tool_call",
+            actor_id="agent-1",
+            input_hash="in123",
+            output_hash="out456",
+        )
+        assert b1 == b2
+
+    def test_canonicalize_different_records(self):
+        """Different inputs produce different canonical bytes."""
+        from mcp_witness.hasher import canonicalize_record_fields
+
+        b1 = canonicalize_record_fields(
+            prev_hash="abc", sequence=0, timestamp="2026-01-01T00:00:00+00:00",
+            action_type="tool_call", actor_id="agent-1",
+            input_hash="in123", output_hash="out456",
+        )
+        b2 = canonicalize_record_fields(
+            prev_hash="def", sequence=1, timestamp="2026-01-02T00:00:00+00:00",
+            action_type="decision", actor_id="agent-2",
+            input_hash="in999", output_hash="out000",
+        )
+        assert b1 != b2
+
+    def test_canonicalize_includes_tool_name(self):
+        """Tool name is included when provided."""
+        from mcp_witness.hasher import canonicalize_record_fields
+
+        b1 = canonicalize_record_fields(
+            prev_hash="abc", sequence=0, timestamp="2026-01-01T00:00:00+00:00",
+            action_type="tool_call", actor_id="agent-1",
+            input_hash="in123", output_hash="out456",
+        )
+        b2 = canonicalize_record_fields(
+            prev_hash="abc", sequence=0, timestamp="2026-01-01T00:00:00+00:00",
+            action_type="tool_call", actor_id="agent-1",
+            input_hash="in123", output_hash="out456",
+            tool_name="search_tool",
+        )
+        assert b1 != b2
+
+    def test_canonical_contains_version_field(self):
+        """Canonical payload includes version field 'v'."""
+        import json
+
+        from mcp_witness.hasher import canonicalize_record_fields
+
+        b = canonicalize_record_fields(
+            prev_hash="abc", sequence=0, timestamp="2026-01-01T00:00:00+00:00",
+            action_type="tool_call", actor_id="agent-1",
+            input_hash="in123", output_hash="out456",
+        )
+        payload = json.loads(b.decode())
+        assert payload["v"] == 1
+
+    def test_sign_canonical_roundtrip(self):
+        """Sign and verify canonical payload roundtrip."""
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+
+        from mcp_witness.crypto_agility import CURRENT_SIGNING_ALGO
+        from mcp_witness.hasher import (
+            canonicalize_record_fields,
+            sign_canonical_payload,
+            verify_canonical_signature,
+        )
+
+        private_key = ed25519.Ed25519PrivateKey.generate()
+        public_key_bytes = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+
+        canonical_bytes = canonicalize_record_fields(
+            prev_hash="abc", sequence=0, timestamp="2026-01-01T00:00:00+00:00",
+            action_type="tool_call", actor_id="agent-1",
+            input_hash="in123", output_hash="out456",
+        )
+
+        sig_data = sign_canonical_payload(canonical_bytes, private_key, CURRENT_SIGNING_ALGO.value)
+        assert sig_data["algo"] == "ed25519+sha256:v1"
+
+        # Verify with same canonical bytes
+        assert verify_canonical_signature(canonical_bytes, sig_data, public_key_bytes) is True
+
+        # Verify with wrong canonical bytes
+        wrong_bytes = canonicalize_record_fields(
+            prev_hash="wrong", sequence=0, timestamp="2026-01-01T00:00:00+00:00",
+            action_type="tool_call", actor_id="agent-1",
+            input_hash="in123", output_hash="out456",
+        )
+        assert verify_canonical_signature(wrong_bytes, sig_data, public_key_bytes) is False
+
+    def test_sign_canonical_with_key_id(self):
+        """Canonical signing includes key_id when provided."""
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+
+        from mcp_witness.crypto_agility import CURRENT_SIGNING_ALGO
+        from mcp_witness.hasher import (
+            canonicalize_record_fields,
+            sign_canonical_payload,
+        )
+
+        private_key = ed25519.Ed25519PrivateKey.generate()
+
+        canonical_bytes = canonicalize_record_fields(
+            prev_hash="abc", sequence=0, timestamp="2026-01-01T00:00:00+00:00",
+            action_type="tool_call", actor_id="agent-1",
+            input_hash="in123", output_hash="out456",
+        )
+
+        sig_data = sign_canonical_payload(canonical_bytes, private_key, CURRENT_SIGNING_ALGO.value, key_id="key-001")
+        assert sig_data.get("key_id") == "key-001"

@@ -85,6 +85,16 @@ class WitnessRecord(BaseModel):
         default=None, description="Ed25519 public key of signer, hex-encoded"
     )
 
+    # Crypto hardening v0.7.0
+    canonical_payload: Optional[str] = Field(
+        default=None,
+        description="Canonical JSON payload that was signed, hex-encoded bytes",
+    )
+    signer_key_id: Optional[str] = Field(
+        default=None,
+        description="Identifier of the signing key (for key rotation/revocation)",
+    )
+
     # Metadata
     redacted_fields: list[str] = Field(default_factory=list)
 

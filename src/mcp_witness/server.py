@@ -1038,9 +1038,13 @@ async def handle_health(store: StorageBackend) -> dict:
     # Chain validity
     chain_valid = stats.chain_valid if db_ok else False
 
+    # Startup chain verification status
+    chain_verified_at_startup = getattr(store, "_chain_valid_at_startup", None)
+
     return {
         "status": "healthy" if db_ok else "unhealthy",
         "version": version,
+        "chain_verified_at_startup": chain_verified_at_startup,
         "database": {
             "connected": db_ok,
             "total_records": stats.total_records if db_ok else 0,
@@ -1162,6 +1166,15 @@ async def main():
     global storage
     storage = _create_storage()
     await storage.connect()
+
+    # Warn on startup chain verification failure (degraded operation)
+    chain_ok = getattr(storage, "_chain_valid_at_startup", None)
+    if chain_ok is False:
+        logger.warning(
+            "STARTUP CHAIN VERIFICATION FAILED — continuing in degraded mode. "
+            "Chain integrity issues detected; signature verification may fail. "
+            "Run witness_verify to diagnose."
+        )
 
     try:
         async with stdio_server() as (read_stream, write_stream):
