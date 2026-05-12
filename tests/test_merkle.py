@@ -109,11 +109,7 @@ class TestMerkleProof:
 
         for i in range(4):
             proof = get_merkle_proof(tree, i)
-            assert verify_merkle_proof(
-                proof.leaf_hash,
-                proof.proof_path,
-                tree.root
-            )
+            assert verify_merkle_proof(proof.leaf_hash, proof.proof_path, tree.root)
 
     def test_invalid_proof_fails(self):
         """Modified proof fails verification."""
@@ -123,11 +119,7 @@ class TestMerkleProof:
         proof = get_merkle_proof(tree, 0)
 
         # Modify the leaf hash
-        assert not verify_merkle_proof(
-            "wrong_hash",
-            proof.proof_path,
-            tree.root
-        )
+        assert not verify_merkle_proof("wrong_hash", proof.proof_path, tree.root)
 
     def test_wrong_root_fails(self):
         """Wrong root fails verification."""
@@ -136,11 +128,7 @@ class TestMerkleProof:
 
         proof = get_merkle_proof(tree, 0)
 
-        assert not verify_merkle_proof(
-            proof.leaf_hash,
-            proof.proof_path,
-            "wrong_root"
-        )
+        assert not verify_merkle_proof(proof.leaf_hash, proof.proof_path, "wrong_root")
 
     def test_invalid_index_returns_none(self):
         """Invalid index returns None."""
@@ -158,11 +146,7 @@ class TestMerkleProof:
         # Verify random samples
         for i in [0, 100, 500, 999]:
             proof = get_merkle_proof(tree, i)
-            assert verify_merkle_proof(
-                proof.leaf_hash,
-                proof.proof_path,
-                tree.root
-            )
+            assert verify_merkle_proof(proof.leaf_hash, proof.proof_path, tree.root)
 
 
 class TestMerkleZeroLeaf:
@@ -201,9 +185,8 @@ class TestMerkleZeroLeaf:
     def test_zero_leaf_prefix_domain_separated(self):
         """Zero leaf should have the 0x00 domain separation prefix."""
         import hashlib
-        expected = hashlib.sha256(
-            b"\x00" + b"MCP_WITNESS_MERKLE_NULL_V1"
-        ).hexdigest()
+
+        expected = hashlib.sha256(b"\x00" + b"MCP_WITNESS_MERKLE_NULL_V1").hexdigest()
         assert MERKLE_ZERO_LEAF == expected
 
     def test_trailing_duplicates_no_collision(self):

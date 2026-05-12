@@ -20,9 +20,7 @@ NODE_PREFIX = b"\x01"
 # Used instead of duplicating the last leaf when padding to a power of 2.
 # This prevents collision attacks where two different record sets with
 # trailing duplicates produce the same Merkle root.
-MERKLE_ZERO_LEAF = hashlib.sha256(
-    LEAF_PREFIX + b"MCP_WITNESS_MERKLE_NULL_V1"
-).hexdigest()
+MERKLE_ZERO_LEAF = hashlib.sha256(LEAF_PREFIX + b"MCP_WITNESS_MERKLE_NULL_V1").hexdigest()
 
 
 def hash_leaf(data: str) -> str:
@@ -149,10 +147,9 @@ def get_merkle_proof(tree: MerkleTree, index: int) -> Optional[MerkleProof]:
         sibling_idx = idx ^ 1  # XOR to get sibling index
 
         if sibling_idx < len(level):
-            proof_path.append({
-                "hash": level[sibling_idx],
-                "position": "right" if idx % 2 == 0 else "left"
-            })
+            proof_path.append(
+                {"hash": level[sibling_idx], "position": "right" if idx % 2 == 0 else "left"}
+            )
 
         idx //= 2
 
@@ -164,11 +161,7 @@ def get_merkle_proof(tree: MerkleTree, index: int) -> Optional[MerkleProof]:
     )
 
 
-def verify_merkle_proof(
-    leaf_hash: str,
-    proof_path: list[dict],
-    expected_root: str
-) -> bool:
+def verify_merkle_proof(leaf_hash: str, proof_path: list[dict], expected_root: str) -> bool:
     """
     Verify that a leaf belongs to a tree with the given root.
 

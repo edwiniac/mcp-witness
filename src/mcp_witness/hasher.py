@@ -89,8 +89,15 @@ def compute_record_hash(
         tool_name or "",
     ]
 
-    # Join with a delimiter that won't appear in the data
-    payload = "|".join(components)
+    # Join with a null byte (\x00) delimiter, which is safe because:
+    # - Hex hashes ([0-9a-f]+) never contain \x00
+    # - ISO 8601 timestamps never contain \x00
+    # - Sequence numbers (decimal integers) never contain \x00
+    # - Actor/action/tool name strings validated by validate_inputs()
+    #   allow only alphanumeric and [_-:.] characters
+    # Unlike "|", \x00 cannot appear in any component value, so it
+    # prevents hash collision attacks via delimiter injection.
+    payload = "\x00".join(components)
 
     if hmac_key is not None:
         return hmac.new(hmac_key, payload.encode("utf-8"), hashlib.sha256).hexdigest()

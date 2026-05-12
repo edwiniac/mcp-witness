@@ -2,6 +2,7 @@
 
 Any StorageBackend implementation must pass these tests.
 """
+
 import pytest
 
 from mcp_witness.models import ActionType, Sensitivity
@@ -10,7 +11,7 @@ from mcp_witness.models import ActionType, Sensitivity
 @pytest.mark.asyncio
 async def test_connect_and_close(temp_storage):
     """Backend can connect and close cleanly."""
-    assert temp_storage._db is not None or hasattr(temp_storage, '_pool')
+    assert temp_storage._db is not None or hasattr(temp_storage, "_pool")
 
 
 @pytest.mark.asyncio
@@ -169,6 +170,7 @@ async def test_sensitivity_filtering(temp_storage):
 # Rate Limiting Contract Tests
 # =========================================================================
 
+
 @pytest.mark.asyncio
 async def test_check_rate_limit_exists(temp_storage):
     """Backend implements check_rate_limit."""
@@ -195,6 +197,7 @@ async def test_rate_limit_state_nonexistent(temp_storage):
 # =========================================================================
 # Idempotency Contract Tests
 # =========================================================================
+
 
 @pytest.mark.asyncio
 async def test_check_and_record_nonce_exists(temp_storage):
@@ -229,5 +232,6 @@ async def test_get_signer_public_key_exists(temp_storage):
     """Backend implements get_signer_public_key."""
     assert hasattr(temp_storage, "get_signer_public_key")
     result = await temp_storage.get_signer_public_key()
-    # Without signing key configured, returns None
-    assert result is None
+    # Auto-generated key means public key is always available
+    assert result is not None
+    assert len(result) == 64  # 32 bytes hex

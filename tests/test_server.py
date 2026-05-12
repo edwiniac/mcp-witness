@@ -1,6 +1,5 @@
 """Tests for MCP server tools."""
 
-
 import pytest
 
 from mcp_witness.server import (
@@ -22,7 +21,7 @@ class TestListTools:
     async def test_list_tools_returns_all_tools(self):
         tools = await list_tools()
 
-        assert len(tools) == 14
+        assert len(tools) == 17
         tool_names = [t.name for t in tools]
         # Original tools
         assert "witness_record" in tool_names
@@ -39,6 +38,10 @@ class TestListTools:
         assert "witness_verify_anchors" in tool_names
         assert "witness_proof" in tool_names
         assert "witness_backfill" in tool_names
+        # v0.4.0: Health, Delete, Search
+        assert "witness_health" in tool_names
+        assert "witness_delete" in tool_names
+        assert "witness_search" in tool_names
 
     @pytest.mark.asyncio
     async def test_tools_have_schemas(self):
@@ -55,10 +58,13 @@ class TestHandleRecord:
 
     @pytest.mark.asyncio
     async def test_record_basic(self, temp_storage):
-        result = await handle_record(temp_storage, {
-            "action_type": "tool_call",
-            "tool_name": "test_tool",
-        })
+        result = await handle_record(
+            temp_storage,
+            {
+                "action_type": "tool_call",
+                "tool_name": "test_tool",
+            },
+        )
 
         assert result["recorded"] is True
         assert "record_id" in result
@@ -67,27 +73,33 @@ class TestHandleRecord:
 
     @pytest.mark.asyncio
     async def test_record_with_data(self, temp_storage):
-        result = await handle_record(temp_storage, {
-            "action_type": "tool_call",
-            "tool_name": "search",
-            "input_data": {"query": "test"},
-            "output_data": {"results": [1, 2, 3]},
-            "reasoning": "User requested search",
-            "confidence": 0.9,
-            "sensitivity": "internal",
-            "session_id": "session_abc",
-            "actor_id": "claude-3",
-        })
+        result = await handle_record(
+            temp_storage,
+            {
+                "action_type": "tool_call",
+                "tool_name": "search",
+                "input_data": {"query": "test"},
+                "output_data": {"results": [1, 2, 3]},
+                "reasoning": "User requested search",
+                "confidence": 0.9,
+                "sensitivity": "internal",
+                "session_id": "session_abc",
+                "actor_id": "claude-3",
+            },
+        )
 
         assert result["recorded"] is True
 
     @pytest.mark.asyncio
     async def test_record_with_redaction(self, temp_storage):
-        result = await handle_record(temp_storage, {
-            "action_type": "tool_call",
-            "input_data": {"ssn": "123-45-6789"},
-            "redact_fields": ["ssn"],
-        })
+        result = await handle_record(
+            temp_storage,
+            {
+                "action_type": "tool_call",
+                "input_data": {"ssn": "123-45-6789"},
+                "redact_fields": ["ssn"],
+            },
+        )
 
         assert result["recorded"] is True
 
@@ -119,10 +131,13 @@ class TestHandleVerify:
         for _ in range(5):
             await handle_record(temp_storage, {"action_type": "tool_call"})
 
-        result = await handle_verify(temp_storage, {
-            "from_sequence": 1,
-            "to_sequence": 3,
-        })
+        result = await handle_verify(
+            temp_storage,
+            {
+                "from_sequence": 1,
+                "to_sequence": 3,
+            },
+        )
 
         assert result["records_checked"] == 3
 
@@ -142,14 +157,20 @@ class TestHandleQuery:
 
     @pytest.mark.asyncio
     async def test_query_by_session(self, temp_storage):
-        await handle_record(temp_storage, {
-            "action_type": "tool_call",
-            "session_id": "session_a",
-        })
-        await handle_record(temp_storage, {
-            "action_type": "tool_call",
-            "session_id": "session_b",
-        })
+        await handle_record(
+            temp_storage,
+            {
+                "action_type": "tool_call",
+                "session_id": "session_a",
+            },
+        )
+        await handle_record(
+            temp_storage,
+            {
+                "action_type": "tool_call",
+                "session_id": "session_b",
+            },
+        )
 
         result = await handle_query(temp_storage, {"session_id": "session_a"})
 
@@ -180,14 +201,20 @@ class TestHandleChain:
 
     @pytest.mark.asyncio
     async def test_chain_by_session(self, temp_storage):
-        await handle_record(temp_storage, {
-            "action_type": "tool_call",
-            "session_id": "my_session",
-        })
-        await handle_record(temp_storage, {
-            "action_type": "decision",
-            "session_id": "my_session",
-        })
+        await handle_record(
+            temp_storage,
+            {
+                "action_type": "tool_call",
+                "session_id": "my_session",
+            },
+        )
+        await handle_record(
+            temp_storage,
+            {
+                "action_type": "decision",
+                "session_id": "my_session",
+            },
+        )
 
         result = await handle_chain(temp_storage, {"session_id": "my_session"})
 
@@ -213,16 +240,22 @@ class TestHandleStats:
 
     @pytest.mark.asyncio
     async def test_stats_with_records(self, temp_storage):
-        await handle_record(temp_storage, {
-            "action_type": "tool_call",
-            "actor_id": "claude",
-            "session_id": "s1",
-        })
-        await handle_record(temp_storage, {
-            "action_type": "decision",
-            "actor_id": "claude",
-            "session_id": "s1",
-        })
+        await handle_record(
+            temp_storage,
+            {
+                "action_type": "tool_call",
+                "actor_id": "claude",
+                "session_id": "s1",
+            },
+        )
+        await handle_record(
+            temp_storage,
+            {
+                "action_type": "decision",
+                "actor_id": "claude",
+                "session_id": "s1",
+            },
+        )
 
         result = await handle_stats(temp_storage)
 
@@ -282,6 +315,7 @@ class TestCallToolAuth:
                 result = await call_tool("witness_stats", {})
 
         import json
+
         data = json.loads(result[0].text)
         assert "total_records" in data or "error" not in data
 
@@ -293,13 +327,18 @@ class TestCallToolAuth:
         from mcp_witness.server import call_tool
 
         with patch("mcp_witness.server.get_storage", return_value=temp_storage):
-            with patch.dict("os.environ", {
-                "MCP_WITNESS_API_KEYS": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:admin",
-                "MCP_WITNESS_API_KEY": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            }, clear=True):
+            with patch.dict(
+                "os.environ",
+                {
+                    "MCP_WITNESS_API_KEYS": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:admin",
+                    "MCP_WITNESS_API_KEY": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                },
+                clear=True,
+            ):
                 result = await call_tool("witness_stats", {})
 
         import json
+
         data = json.loads(result[0].text)
         assert "total_records" in data
 
@@ -311,18 +350,26 @@ class TestCallToolAuth:
         from mcp_witness.server import call_tool
 
         with patch("mcp_witness.server.get_storage", return_value=temp_storage):
-            with patch.dict("os.environ", {
-                "MCP_WITNESS_API_KEYS": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:auditor",
-                "MCP_WITNESS_API_KEY": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            }, clear=True):
+            with patch.dict(
+                "os.environ",
+                {
+                    "MCP_WITNESS_API_KEYS": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:auditor",
+                    "MCP_WITNESS_API_KEY": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                },
+                clear=True,
+            ):
                 result = await call_tool("witness_record", {"action_type": "tool_call"})
 
         import json
+
         data = json.loads(result[0].text)
         assert "error" in data or "PermissionError" in str(data)
         # Should have error (PermissionError is safe and gets type+message)
         if "error" in data:
-            assert "permission" in data.get("error", "").lower() or "role" in data.get("error", "").lower()
+            assert (
+                "permission" in data.get("error", "").lower()
+                or "role" in data.get("error", "").lower()
+            )
 
 
 class TestHandleExport:

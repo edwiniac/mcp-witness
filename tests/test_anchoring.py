@@ -161,6 +161,7 @@ class TestAnchorReceipt:
     def test_receipt_to_dict(self):
         """Receipt serializes to dict correctly."""
         from datetime import datetime, timezone
+
         receipt = AnchorReceipt(
             anchor_type=AnchorType.TSA,
             merkle_root="abc123",
@@ -176,6 +177,7 @@ class TestAnchorReceipt:
     def test_receipt_roundtrip(self):
         """Receipt survives dict roundtrip."""
         from datetime import datetime, timezone
+
         receipt = AnchorReceipt(
             anchor_type=AnchorType.IPFS,
             merkle_root="def456",
@@ -233,6 +235,7 @@ class TestTSAVerify:
 
     def _make_tsa_receipt(self, raw_receipt: bytes) -> AnchorReceipt:
         from datetime import datetime, timezone
+
         return AnchorReceipt(
             anchor_type=AnchorType.TSA,
             merkle_root="abc123",
@@ -277,11 +280,14 @@ class TestTSAVerify:
     async def test_verify_local_attestation(self):
         """Local attestation with matching merkle_root should return True."""
         provider = TSAProvider()
-        attestation = json.dumps({
-            "version": "mcp-witness-tsa-v1",
-            "merkle_root": "abc123",
-            "timestamp": "2026-01-01T00:00:00+00:00",
-        }, sort_keys=True).encode()
+        attestation = json.dumps(
+            {
+                "version": "mcp-witness-tsa-v1",
+                "merkle_root": "abc123",
+                "timestamp": "2026-01-01T00:00:00+00:00",
+            },
+            sort_keys=True,
+        ).encode()
         receipt = self._make_tsa_receipt(attestation)
         receipt.receipt_id = "local_test123"
         assert await provider.verify(receipt)
@@ -290,11 +296,14 @@ class TestTSAVerify:
     async def test_verify_local_attestation_wrong_root(self):
         """Local attestation with wrong merkle_root should return False."""
         provider = TSAProvider()
-        attestation = json.dumps({
-            "version": "mcp-witness-tsa-v1",
-            "merkle_root": "wrong_root",
-            "timestamp": "2026-01-01T00:00:00+00:00",
-        }, sort_keys=True).encode()
+        attestation = json.dumps(
+            {
+                "version": "mcp-witness-tsa-v1",
+                "merkle_root": "wrong_root",
+                "timestamp": "2026-01-01T00:00:00+00:00",
+            },
+            sort_keys=True,
+        ).encode()
         receipt = self._make_tsa_receipt(attestation)
         receipt.receipt_id = "local_test123"
         receipt.merkle_root = "abc123"
@@ -340,6 +349,7 @@ class TestOTSVerify:
 
     def _make_ots_receipt(self, raw_receipt: bytes) -> AnchorReceipt:
         from datetime import datetime, timezone
+
         return AnchorReceipt(
             anchor_type=AnchorType.OPENTIMESTAMPS,
             merkle_root="abc123",
@@ -367,7 +377,7 @@ class TestOTSVerify:
         # 0xAC = 0b10101100 -> low 7 = 0b0101100 = 44, more = yes
         # 0x02 = 0b00000010 -> low 7 = 2, more = no
         # value = 44 | (2 << 7) = 44 + 256 = 300
-        value, consumed = OpenTimestampsProvider._ots_parse_varint(b"\xAC\x02", 0)
+        value, consumed = OpenTimestampsProvider._ots_parse_varint(b"\xac\x02", 0)
         assert value == 300
         assert consumed == 2
 
@@ -456,6 +466,7 @@ class TestIPFSVerify:
     async def test_verify_no_url(self):
         """Receipt without verification_url returns False."""
         from datetime import datetime, timezone
+
         provider = IPFSProvider()
         receipt = AnchorReceipt(
             anchor_type=AnchorType.IPFS,
@@ -470,6 +481,7 @@ class TestIPFSVerify:
     async def test_verify_no_receipt_id(self):
         """Receipt without receipt_id returns False."""
         from datetime import datetime, timezone
+
         provider = IPFSProvider()
         receipt = AnchorReceipt(
             anchor_type=AnchorType.IPFS,
@@ -487,6 +499,7 @@ class TestIPFSVerify:
         cid = compute_ipfs_cidv0(content)
 
         from datetime import datetime, timezone
+
         provider = IPFSProvider()
         receipt = AnchorReceipt(
             anchor_type=AnchorType.IPFS,
@@ -511,6 +524,7 @@ class TestIPFSVerify:
         content = json.dumps({"merkle_root": "different"}, sort_keys=True).encode()
 
         from datetime import datetime, timezone
+
         provider = IPFSProvider()
         receipt = AnchorReceipt(
             anchor_type=AnchorType.IPFS,
@@ -529,9 +543,10 @@ class TestIPFSVerify:
             assert not await provider.verify(receipt)
 
     @pytest.mark.asyncio
-    async def test_verify_fetch_fails_fallback_to_head(self):
-        """When GET fails, falls back to HEAD accessibility check."""
+    async def test_verify_fetch_fails_returns_false(self):
+        """When GET fails, returns False (HEAD proves nothing)."""
         from datetime import datetime, timezone
+
         provider = IPFSProvider()
         receipt = AnchorReceipt(
             anchor_type=AnchorType.IPFS,
@@ -544,18 +559,13 @@ class TestIPFSVerify:
         with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
             mock_get.side_effect = Exception("Connection failed")
 
-            with patch.object(httpx.AsyncClient, "head", new_callable=AsyncMock) as mock_head:
-                mock_response = AsyncMock()
-                mock_response.status_code = 200
-                mock_head.return_value = mock_response
-
-                assert await provider.verify(receipt)
-                mock_head.assert_called_once()
+            assert not await provider.verify(receipt)
 
     @pytest.mark.asyncio
     async def test_verify_fetch_fails_head_fails_too(self):
-        """When both GET and HEAD fail, returns False."""
+        """When GET fails, returns False (HEAD fallback removed)."""
         from datetime import datetime, timezone
+
         provider = IPFSProvider()
         receipt = AnchorReceipt(
             anchor_type=AnchorType.IPFS,
@@ -568,7 +578,4 @@ class TestIPFSVerify:
         with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
             mock_get.side_effect = Exception("Connection failed")
 
-            with patch.object(httpx.AsyncClient, "head", new_callable=AsyncMock) as mock_head:
-                mock_head.side_effect = Exception("HEAD also failed")
-
-                assert not await provider.verify(receipt)
+            assert not await provider.verify(receipt)

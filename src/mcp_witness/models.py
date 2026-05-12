@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class ActionType(str, Enum):
     """Types of actions that can be recorded."""
+
     TOOL_CALL = "tool_call"
     DECISION = "decision"
     OUTPUT = "output"
@@ -19,6 +20,7 @@ class ActionType(str, Enum):
 
 class ActorType(str, Enum):
     """Types of actors that can perform actions."""
+
     USER = "user"
     AGENT = "agent"
     SYSTEM = "system"
@@ -26,6 +28,7 @@ class ActorType(str, Enum):
 
 class Sensitivity(str, Enum):
     """Data sensitivity levels for compliance."""
+
     PUBLIC = "public"
     INTERNAL = "internal"
     PII = "pii"  # Personally Identifiable Information
@@ -63,6 +66,11 @@ class WitnessRecord(BaseModel):
     reasoning: Optional[str] = None
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
+    # Tenant / Multi-tenant support
+    org_id: Optional[str] = Field(
+        default=None, description="Organization/tenant ID for multi-tenant deployments"
+    )
+
     # Compliance
     sensitivity: Sensitivity = Sensitivity.INTERNAL
     retention_days: int = Field(default=365, ge=1, description="Days to retain record")
@@ -70,8 +78,12 @@ class WitnessRecord(BaseModel):
     anchored_at: Optional[str] = None
 
     # Signatures (Ed25519, optional)
-    signature: Optional[str] = Field(default=None, description="Ed25519 signature of record_hash, hex-encoded")
-    signer_public_key: Optional[str] = Field(default=None, description="Ed25519 public key of signer, hex-encoded")
+    signature: Optional[str] = Field(
+        default=None, description="Ed25519 signature of record_hash, hex-encoded"
+    )
+    signer_public_key: Optional[str] = Field(
+        default=None, description="Ed25519 public key of signer, hex-encoded"
+    )
 
     # Metadata
     redacted_fields: list[str] = Field(default_factory=list)
@@ -87,6 +99,7 @@ class WitnessRecord(BaseModel):
 
 class VerificationResult(BaseModel):
     """Result of verifying audit trail integrity."""
+
     valid: bool
     records_checked: int
     first_invalid_sequence: Optional[int] = None
@@ -96,6 +109,7 @@ class VerificationResult(BaseModel):
 
 class AttestationResult(BaseModel):
     """Result of external timestamping."""
+
     success: bool
     records_attested: int
     tsa_provider: str
@@ -106,6 +120,7 @@ class AttestationResult(BaseModel):
 
 class ReportResult(BaseModel):
     """Result of generating a compliance report."""
+
     success: bool
     format: str
     report_path: Optional[str] = None
@@ -118,6 +133,7 @@ class ReportResult(BaseModel):
 
 class ChainStats(BaseModel):
     """Statistics about the witness chain."""
+
     total_records: int
     first_record_time: Optional[datetime] = None
     last_record_time: Optional[datetime] = None

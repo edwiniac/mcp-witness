@@ -28,25 +28,29 @@ class AuthRole(str, Enum):
 # Tool Permissions
 # ---------------------------------------------------------------------------
 
-_READ_TOOLS = frozenset({
-    "witness_verify",
-    "witness_verify_fast",
-    "witness_verify_anchors",
-    "witness_query",
-    "witness_chain",
-    "witness_stats",
-    "witness_export",
-    "witness_checkpoints",
-    "witness_proof",
-})
+_READ_TOOLS = frozenset(
+    {
+        "witness_verify",
+        "witness_verify_fast",
+        "witness_verify_anchors",
+        "witness_query",
+        "witness_chain",
+        "witness_stats",
+        "witness_export",
+        "witness_checkpoints",
+        "witness_proof",
+    }
+)
 
-_WRITE_TOOLS = frozenset({
-    "witness_record",
-    "witness_attest",
-    "witness_anchor",
-    "witness_backfill",
-    "witness_configure_compliance",
-})
+_WRITE_TOOLS = frozenset(
+    {
+        "witness_record",
+        "witness_attest",
+        "witness_anchor",
+        "witness_backfill",
+        "witness_configure_compliance",
+    }
+)
 
 ALL_TOOLS = _READ_TOOLS | _WRITE_TOOLS
 
@@ -60,6 +64,7 @@ ROLE_PERMISSIONS: dict[AuthRole, frozenset[str]] = {
 # ---------------------------------------------------------------------------
 # Key Management
 # ---------------------------------------------------------------------------
+
 
 def load_api_keys() -> dict[str, AuthRole]:
     """Load API keys from MCP_WITNESS_API_KEYS env var.

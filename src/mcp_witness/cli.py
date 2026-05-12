@@ -27,9 +27,7 @@ DEFAULT_DB = "~/.mcp-witness/witness.db"
 
 def _get_db_path(args) -> str:
     """Resolve database path from args or env."""
-    return os.path.expanduser(
-        args.db or os.getenv("MCP_WITNESS_DB", DEFAULT_DB)
-    )
+    return os.path.expanduser(args.db or os.getenv("MCP_WITNESS_DB", DEFAULT_DB))
 
 
 def _pads(s: str, width: int = 8) -> str:
@@ -253,15 +251,19 @@ def cmd_checkpoints(args):
     checkpoints = asyncio.run(_list())
 
     if not checkpoints:
-        print("No checkpoints found. Records accumulate every "
-              f"{os.getenv('MCP_WITNESS_CHECKPOINT_INTERVAL', '1000')} records.")
+        print(
+            "No checkpoints found. Records accumulate every "
+            f"{os.getenv('MCP_WITNESS_CHECKPOINT_INTERVAL', '1000')} records."
+        )
         return
 
     print(f"📦 Merkle Checkpoints ({len(checkpoints)}):")
     for cp in checkpoints:
-        print(f"   #{cp.id:>4}  Records {cp.from_sequence:>6}–{cp.to_sequence:<6}  "
-              f"Root: {cp.merkle_root[:12]}...  "
-              f"Created: {cp.created_at.strftime('%Y-%m-%d %H:%M')}")
+        print(
+            f"   #{cp.id:>4}  Records {cp.from_sequence:>6}–{cp.to_sequence:<6}  "
+            f"Root: {cp.merkle_root[:12]}...  "
+            f"Created: {cp.created_at.strftime('%Y-%m-%d %H:%M')}"
+        )
 
 
 def cmd_anchors(args):
@@ -272,6 +274,7 @@ def cmd_anchors(args):
     store = WitnessStorage(Path(_get_db_path(args)))
 
     if args.action == "create":
+
         async def _anchor():
             await store.connect()
             try:
@@ -292,6 +295,7 @@ def cmd_anchors(args):
             print(f"   {r.anchor_type.value}: {r.receipt_id}")
 
     elif args.action == "verify":
+
         async def _verify():
             await store.connect()
             try:
@@ -303,8 +307,126 @@ def cmd_anchors(args):
         valid_count = sum(1 for a in result["anchors"] if a.get("valid"))
         total = len(result["anchors"])
         status = "✅" if valid_count == total else "⚠️"
-        print(f"{status} Anchors for checkpoint #{args.checkpoint_id}: "
-              f"{valid_count}/{total} valid")
+        print(
+            f"{status} Anchors for checkpoint #{args.checkpoint_id}: "
+            f"{valid_count}/{total} valid"
+        )
+
+
+def cmd_quickstart(args):
+    """One-command quickstart: init + serve."""
+    from .server import main as server_main
+    from .storage import WitnessStorage
+
+    db_path = _get_db_path(args)
+    print("🚀 MCP Witness Quickstart")
+    print(f"   Version: {__version__}")
+
+    # Step 1: Initialize
+    store = WitnessStorage(Path(db_path))
+
+    async def _init():
+        await store.connect()
+        stats = await store.get_stats()
+        await store.close()
+        return stats
+
+    try:
+        stats = asyncio.run(_init())
+        print(f"   ✅ Database ready: {db_path}")
+        print(f"      Records: {stats.total_records}")
+        print(f"      Sessions: {stats.unique_sessions}")
+    except Exception as e:
+        print(f"   ❌ Failed to initialize: {e}")
+        sys.exit(1)
+
+    # Step 2: Print next steps
+    print()
+    print("   📋 Next Steps:")
+    print("      1. Configure signing:  export MCP_WITNESS_SIGNING_KEY=$(openssl rand -hex 32)")
+    print("      2. Configure HMAC:     export MCP_WITNESS_HMAC_KEY=$(openssl rand -hex 32)")
+    print("      3. Set up TSA URL:     export TSA_URL=https://freetsa.org/tsr")
+    print("      4. Start dashboard:    mcp-witness dashboard")
+    print("      5. Add to Claude:      claude mcp add witness -- mcp-witness serve")
+    print()
+
+    # Step 3: Start server
+    if not args.no_serve:
+        print("   🔐 Starting MCP Witness server...")
+        asyncio.run(server_main())
+
+
+def cmd_dashboard(args):
+    """Start the web dashboard."""
+    from .dashboard.server import run_dashboard
+
+    port = args.port or int(os.getenv("MCP_WITNESS_DASHBOARD_PORT", "9090"))
+    print("📊 MCP Witness Dashboard")
+    print(f"   Starting on http://{args.host}:{port}")
+    run_dashboard(host=args.host, port=port)
+
+
+def cmd_report(args):
+    """Generate a compliance report."""
+    from .reports import generate_html_report, generate_pdf_report
+    from .storage import WitnessStorage
+
+    store = WitnessStorage(Path(_get_db_path(args)))
+
+    async def _gen():
+        await store.connect()
+        try:
+            stats = await store.get_stats()
+            records = await store.query(limit=100000)
+            verification = await store.verify_chain()
+            return stats, records, verification
+        finally:
+            await store.close()
+
+    stats, records, verification = asyncio.run(_gen())
+
+    if args.format == "pdf":
+        output = args.output or "witness-compliance-report.pdf"
+        path = generate_pdf_report(records, stats, verification, output)
+        print(f"📄 PDF report saved: {path}")
+    else:
+        output = args.output or "witness-compliance-report.html"
+        path = generate_html_report(records, stats, verification, output)
+        print(f"📄 HTML report saved: {path}")
+
+    print(f"   Records: {len(records)}")
+    print(f"   Chain valid: {'✅' if verification.valid else '❌'}")
+
+
+def cmd_search(args):
+    """Full-text search across audit records."""
+    from .storage import WitnessStorage
+
+    store = WitnessStorage(Path(_get_db_path(args)))
+
+    async def _search():
+        await store.connect()
+        try:
+            search_method = getattr(store, "search", None)
+            if search_method is None:
+                raise RuntimeError("This storage backend does not support search")
+            return await search_method(query=args.query, limit=args.limit)
+        finally:
+            await store.close()
+
+    try:
+        records = asyncio.run(_search())
+        print(f"🔍 Search results for '{args.query}': {len(records)} records")
+        for r in records:
+            preview = (
+                r.reasoning[:80] + "..."
+                if r.reasoning and len(r.reasoning) > 80
+                else (r.reasoning or "")
+            )
+            print(f"   #{r.sequence:>4} [{r.action_type.value:>12}] {r.actor_id:>16} — {preview}")
+    except Exception as e:
+        print(f"❌ Search failed: {e}")
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -319,11 +441,13 @@ def main():
         description="🔐 MCP Witness — Immutable audit trail for AI decisions",
     )
     parser.add_argument(
-        "--version", action="version",
+        "--version",
+        action="version",
         version=f"mcp-witness {__version__}",
     )
     parser.add_argument(
-        "--db", help="Path to witness database (default: ~/.mcp-witness/witness.db)",
+        "--db",
+        help="Path to witness database (default: ~/.mcp-witness/witness.db)",
     )
 
     sub = parser.add_subparsers(dest="command", title="commands")
@@ -367,6 +491,25 @@ def main():
     anc_verify = anc_sub.add_parser("verify", help="Verify anchor receipts")
     anc_verify.add_argument("checkpoint_id", type=int)
 
+    # quickstart
+    qs = sub.add_parser("quickstart", help="One-command init + serve")
+    qs.add_argument("--no-serve", action="store_true", help="Init only, don't start server")
+
+    # dashboard
+    dash = sub.add_parser("dashboard", help="Start web dashboard")
+    dash.add_argument("--host", default="0.0.0.0", help="Listen host (default: 0.0.0.0)")
+    dash.add_argument("--port", type=int, help="Listen port (default: 9090)")
+
+    # report
+    rpt = sub.add_parser("report", help="Generate compliance report")
+    rpt.add_argument("--format", choices=["html", "pdf"], default="html", help="Report format")
+    rpt.add_argument("--output", "-o", help="Output file path")
+
+    # search
+    srch = sub.add_parser("search", help="Full-text search across audit records")
+    srch.add_argument("query", type=str, help="Search query text")
+    srch.add_argument("--limit", type=int, default=50, help="Max results")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -382,6 +525,10 @@ def main():
         "proof": cmd_proof,
         "checkpoints": cmd_checkpoints,
         "anchors": cmd_anchors,
+        "quickstart": cmd_quickstart,
+        "dashboard": cmd_dashboard,
+        "report": cmd_report,
+        "search": cmd_search,
     }
 
     commands[args.command](args)

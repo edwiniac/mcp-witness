@@ -53,11 +53,10 @@ def _create_storage() -> StorageBackend:
     """
     if MCP_WITNESS_BACKEND == "postgresql":
         if not MCP_WITNESS_PG_URL:
-            raise ValueError(
-                "MCP_WITNESS_BACKEND=postgresql requires MCP_WITNESS_PG_URL to be set"
-            )
+            raise ValueError("MCP_WITNESS_BACKEND=postgresql requires MCP_WITNESS_PG_URL to be set")
         try:
             from .storage_pg import PgStorage
+
             return PgStorage(MCP_WITNESS_PG_URL)
         except ImportError as e:
             raise ImportError(
@@ -83,189 +82,162 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="witness_record",
             description="Record an AI action/decision to the immutable audit trail. "
-                       "Use for logging tool calls, decisions, outputs, and errors. "
-                       "Creates a cryptographically-linked record for compliance.",
+            "Use for logging tool calls, decisions, outputs, and errors. "
+            "Creates a cryptographically-linked record for compliance.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "action_type": {
                         "type": "string",
                         "enum": ["tool_call", "decision", "output", "error", "snapshot"],
-                        "description": "Type of action being recorded"
+                        "description": "Type of action being recorded",
                     },
                     "tool_name": {
                         "type": "string",
-                        "description": "Name of the tool called (for tool_call actions)"
+                        "description": "Name of the tool called (for tool_call actions)",
                     },
                     "input_data": {
                         "type": "object",
-                        "description": "Input data/arguments for the action"
+                        "description": "Input data/arguments for the action",
                     },
-                    "output_data": {
-                        "type": "object",
-                        "description": "Output/result of the action"
-                    },
+                    "output_data": {"type": "object", "description": "Output/result of the action"},
                     "reasoning": {
                         "type": "string",
-                        "description": "Explanation of why this action was taken"
+                        "description": "Explanation of why this action was taken",
                     },
                     "context": {
                         "type": "object",
-                        "description": "Additional context (conversation state, etc.)"
+                        "description": "Additional context (conversation state, etc.)",
                     },
                     "confidence": {
                         "type": "number",
-                        "description": "Confidence score (0.0 to 1.0)"
+                        "description": "Confidence score (0.0 to 1.0)",
                     },
                     "sensitivity": {
                         "type": "string",
                         "enum": ["public", "internal", "pii", "phi", "confidential"],
                         "description": "Data sensitivity level for compliance",
-                        "default": "internal"
+                        "default": "internal",
                     },
                     "session_id": {
                         "type": "string",
-                        "description": "Session ID to group related actions"
+                        "description": "Session ID to group related actions",
                     },
                     "actor_id": {
                         "type": "string",
-                        "description": "Identifier for the actor (agent name, user ID)"
+                        "description": "Identifier for the actor (agent name, user ID)",
                     },
                     "redact_fields": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Field paths to redact (e.g., ['user.ssn', 'patient.mrn'])"
+                        "description": "Field paths to redact (e.g., ['user.ssn', 'patient.mrn'])",
                     },
                     "retention_days": {
                         "type": "integer",
                         "description": "Days to retain this record (GDPR compliance)",
-                        "default": 365
-                    }
+                        "default": 365,
+                    },
                 },
-                "required": ["action_type"]
-            }
+                "required": ["action_type"],
+            },
         ),
         Tool(
             name="witness_verify",
             description="Verify the integrity of the audit trail. "
-                       "Checks hash chain continuity and detects any tampering.",
+            "Checks hash chain continuity and detects any tampering.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "from_sequence": {
                         "type": "integer",
-                        "description": "Start sequence number for verification"
+                        "description": "Start sequence number for verification",
                     },
                     "to_sequence": {
                         "type": "integer",
-                        "description": "End sequence number for verification"
+                        "description": "End sequence number for verification",
                     },
                     "full_chain": {
                         "type": "boolean",
                         "description": "Verify the entire chain from genesis",
-                        "default": False
-                    }
-                }
-            }
+                        "default": False,
+                    },
+                },
+            },
         ),
         Tool(
             name="witness_query",
             description="Search the audit trail with filters. "
-                       "Find records by session, actor, tool, time range, etc.",
+            "Find records by session, actor, tool, time range, etc.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "session_id": {
-                        "type": "string",
-                        "description": "Filter by session ID"
-                    },
-                    "actor_id": {
-                        "type": "string",
-                        "description": "Filter by actor ID"
-                    },
-                    "tool_name": {
-                        "type": "string",
-                        "description": "Filter by tool name"
-                    },
+                    "session_id": {"type": "string", "description": "Filter by session ID"},
+                    "actor_id": {"type": "string", "description": "Filter by actor ID"},
+                    "tool_name": {"type": "string", "description": "Filter by tool name"},
                     "action_type": {
                         "type": "string",
                         "enum": ["tool_call", "decision", "output", "error", "snapshot"],
-                        "description": "Filter by action type"
+                        "description": "Filter by action type",
                     },
                     "sensitivity": {
                         "type": "string",
                         "enum": ["public", "internal", "pii", "phi", "confidential"],
-                        "description": "Filter by sensitivity level"
+                        "description": "Filter by sensitivity level",
                     },
-                    "from_time": {
-                        "type": "string",
-                        "description": "Start time (ISO 8601 format)"
-                    },
-                    "to_time": {
-                        "type": "string",
-                        "description": "End time (ISO 8601 format)"
-                    },
+                    "from_time": {"type": "string", "description": "Start time (ISO 8601 format)"},
+                    "to_time": {"type": "string", "description": "End time (ISO 8601 format)"},
                     "limit": {
                         "type": "integer",
                         "description": "Maximum records to return",
-                        "default": 100
-                    }
-                }
-            }
+                        "default": 100,
+                    },
+                },
+            },
         ),
         Tool(
             name="witness_chain",
             description="Get the full decision chain for a session. "
-                       "Shows all linked actions in chronological order.",
+            "Shows all linked actions in chronological order.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "session_id": {
-                        "type": "string",
-                        "description": "Session ID to get chain for"
-                    },
+                    "session_id": {"type": "string", "description": "Session ID to get chain for"},
                     "record_id": {
                         "type": "string",
-                        "description": "Get chain containing this record"
-                    }
+                        "description": "Get chain containing this record",
+                    },
                 },
-                "required": []
-            }
+                "required": [],
+            },
         ),
         Tool(
             name="witness_stats",
             description="Get statistics about the audit trail. "
-                       "Shows record counts, time ranges, chain health, etc.",
-            inputSchema={
-                "type": "object",
-                "properties": {}
-            }
+            "Shows record counts, time ranges, chain health, etc.",
+            inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
             name="witness_attest",
             description="Get an RFC 3161 timestamp from an external authority. "
-                       "Creates legal-grade proof that records existed at a specific time. "
-                       "Requires FREETSA_URL environment variable (default: https://freetsa.org/tsr).",
+            "Creates legal-grade proof that records existed at a specific time. "
+            "Requires FREETSA_URL environment variable (default: https://freetsa.org/tsr).",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "record_id": {
-                        "type": "string",
-                        "description": "Specific record ID to attest"
-                    },
+                    "record_id": {"type": "string", "description": "Specific record ID to attest"},
                     "batch": {
                         "type": "boolean",
                         "description": "Attest all unattested records",
-                        "default": True
-                    }
-                }
-            }
+                        "default": True,
+                    },
+                },
+            },
         ),
         Tool(
             name="witness_export",
             description="Export audit records for compliance reporting. "
-                       "Generates JSON output suitable for auditors. "
-                       "Use the output parameter to write to a file.",
+            "Generates JSON output suitable for auditors. "
+            "Use the output parameter to write to a file.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -273,32 +245,26 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "enum": ["json", "summary"],
                         "description": "Export format",
-                        "default": "json"
+                        "default": "json",
                     },
                     "output": {
                         "type": "string",
-                        "description": "Safe output file path (must be within allowed directory)"
+                        "description": "Safe output file path (must be within allowed directory)",
                     },
-                    "from_time": {
-                        "type": "string",
-                        "description": "Start time (ISO 8601 format)"
-                    },
-                    "to_time": {
-                        "type": "string",
-                        "description": "End time (ISO 8601 format)"
-                    },
+                    "from_time": {"type": "string", "description": "Start time (ISO 8601 format)"},
+                    "to_time": {"type": "string", "description": "End time (ISO 8601 format)"},
                     "session_ids": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Filter by specific sessions"
+                        "description": "Filter by specific sessions",
                     },
                     "include_verification": {
                         "type": "boolean",
                         "description": "Include chain verification in report",
-                        "default": True
-                    }
-                }
-            }
+                        "default": True,
+                    },
+                },
+            },
         ),
         # =====================================================================
         # New: Checkpoint and Anchoring Tools
@@ -306,57 +272,48 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="witness_checkpoints",
             description="List Merkle checkpoints. Checkpoints group records into "
-                       "Merkle trees for O(log n) verification instead of O(n).",
+            "Merkle trees for O(log n) verification instead of O(n).",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "limit": {
                         "type": "integer",
                         "description": "Maximum checkpoints to return",
-                        "default": 20
+                        "default": 20,
                     }
-                }
-            }
+                },
+            },
         ),
         Tool(
             name="witness_verify_fast",
             description="Fast chain verification using Merkle checkpoints. "
-                       "Much faster than full verification for large chains.",
+            "Much faster than full verification for large chains.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "from_sequence": {
-                        "type": "integer",
-                        "description": "Start sequence number"
-                    },
-                    "to_sequence": {
-                        "type": "integer",
-                        "description": "End sequence number"
-                    }
-                }
-            }
+                    "from_sequence": {"type": "integer", "description": "Start sequence number"},
+                    "to_sequence": {"type": "integer", "description": "End sequence number"},
+                },
+            },
         ),
         Tool(
             name="witness_anchor",
             description="Anchor a checkpoint to external trust sources (TSA, Bitcoin, IPFS). "
-                       "Creates cryptographic proof verifiable by third parties.",
+            "Creates cryptographic proof verifiable by third parties.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "checkpoint_id": {
                         "type": "integer",
-                        "description": "Checkpoint to anchor (default: latest)"
+                        "description": "Checkpoint to anchor (default: latest)",
                     },
                     "anchor_types": {
                         "type": "array",
-                        "items": {
-                            "type": "string",
-                            "enum": ["tsa", "ots", "ipfs"]
-                        },
-                        "description": "Anchor providers to use (default: all)"
-                    }
-                }
-            }
+                        "items": {"type": "string", "enum": ["tsa", "ots", "ipfs"]},
+                        "description": "Anchor providers to use (default: all)",
+                    },
+                },
+            },
         ),
         Tool(
             name="witness_verify_anchors",
@@ -366,51 +323,104 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "checkpoint_id": {
                         "type": "integer",
-                        "description": "Checkpoint to verify anchors for (default: latest)"
+                        "description": "Checkpoint to verify anchors for (default: latest)",
                     }
-                }
-            }
+                },
+            },
         ),
         Tool(
             name="witness_proof",
             description="Get complete proof package for a single record. "
-                       "Includes Merkle proof and external anchor receipts - "
-                       "everything needed for third-party verification.",
+            "Includes Merkle proof and external anchor receipts - "
+            "everything needed for third-party verification.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "sequence": {
                         "type": "integer",
-                        "description": "Record sequence number to get proof for"
+                        "description": "Record sequence number to get proof for",
                     }
                 },
-                "required": ["sequence"]
-            }
+                "required": ["sequence"],
+            },
         ),
         Tool(
             name="witness_backfill",
             description="Create checkpoints for existing records that don't have them. "
-                       "Run this after upgrading to enable fast verification.",
-            inputSchema={
-                "type": "object",
-                "properties": {}
-            }
+            "Run this after upgrading to enable fast verification.",
+            inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
             name="witness_configure_compliance",
             description="Apply a compliance preset (HIPAA, GDPR, SOX, FedRAMP, SOC2, PCI DSS). "
-                       "Automatically configures retention, redaction, attestation, and audit settings.",
+            "Automatically configures retention, redaction, attestation, and audit settings.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "preset": {
                         "type": "string",
                         "enum": ["hipaa", "gdpr", "sox", "fedramp", "soc2", "pci_dss"],
-                        "description": "Compliance framework to apply"
+                        "description": "Compliance framework to apply",
                     }
                 },
-                "required": ["preset"]
-            }
+                "required": ["preset"],
+            },
+        ),
+        Tool(
+            name="witness_health",
+            description="Check the operational status of the witness system. "
+            "Returns DB connectivity, chain stats, anchor status, "
+            "signing status, and server version.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="witness_delete",
+            description="Redact records for GDPR right to erasure. "
+            "Instead of deleting (which breaks chain integrity), data fields "
+            "are nulled and the record is marked as redacted. "
+            "Provide record_id for single deletion or session_id for "
+            "GDPR right to erasure (deletes all records in a session). "
+            "The 'reason' field is required for audit trail.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "record_id": {
+                        "type": "string",
+                        "description": "ID of the specific record to redact",
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Session ID to redact all records for (GDPR right to erasure)",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Reason for deletion/redaction (required for audit)",
+                    },
+                },
+                "required": ["reason"],
+            },
+        ),
+        Tool(
+            name="witness_search",
+            description="Full-text search across audit records. "
+            "Searches reasoning, input_data, and output_data fields "
+            "using LIKE pattern matching. "
+            "Respects limit/offset for pagination.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search text to find in reasoning, input_data, or output_data",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum records to return",
+                        "default": 50,
+                    },
+                },
+                "required": ["query"],
+            },
         ),
     ]
 
@@ -454,6 +464,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await handle_backfill(store)
         elif name == "witness_configure_compliance":
             result = await handle_compliance(store, arguments)
+        elif name == "witness_health":
+            result = await handle_health(store)
+        elif name == "witness_delete":
+            result = await handle_delete(store, arguments)
+        elif name == "witness_search":
+            result = await handle_search(store, arguments)
         else:
             result = {"error": f"Unknown tool: {name}"}
 
@@ -716,22 +732,30 @@ async def handle_export(store: StorageBackend, args: dict) -> dict:
                 for at in ActionType
                 if any(r.action_type == at for r in records)
             },
-            "chain_verification": {
-                "valid": verification.valid if verification else None,
-                "records_checked": verification.records_checked if verification else None,
-                "issues": verification.issues if verification else None,
-            } if include_verification else None,
+            "chain_verification": (
+                {
+                    "valid": verification.valid if verification else None,
+                    "records_checked": verification.records_checked if verification else None,
+                    "issues": verification.issues if verification else None,
+                }
+                if include_verification
+                else None
+            ),
         }
 
     # Full JSON export
     export_data = {
         "export_format": "json",
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "chain_verification": {
-            "valid": verification.valid,
-            "records_checked": verification.records_checked,
-            "issues": verification.issues,
-        } if verification else None,
+        "chain_verification": (
+            {
+                "valid": verification.valid,
+                "records_checked": verification.records_checked,
+                "issues": verification.issues,
+            }
+            if verification
+            else None
+        ),
         "records": [
             {
                 "id": str(r.id),
@@ -776,6 +800,7 @@ async def handle_export(store: StorageBackend, args: dict) -> dict:
 # New Handlers: Checkpoints and Anchoring
 # =========================================================================
 
+
 async def handle_checkpoints(store: StorageBackend, args: dict) -> dict:
     """Handle witness_checkpoints tool call."""
     limit = args.get("limit", 20)
@@ -809,7 +834,11 @@ async def handle_verify_fast(store: StorageBackend, args: dict) -> dict:
         "records_checked": result.records_checked,
         "issues": result.issues,
         "verified_at": result.verified_at.isoformat(),
-        "status": "✅ Chain integrity verified (fast mode)" if result.valid else "❌ Chain integrity FAILED",
+        "status": (
+            "✅ Chain integrity verified (fast mode)"
+            if result.valid
+            else "❌ Chain integrity FAILED"
+        ),
         "note": "Used Merkle checkpoints for O(log n) verification",
     }
 
@@ -891,7 +920,11 @@ async def handle_backfill(store: StorageBackend) -> dict:
 
     return {
         "checkpoints_created": checkpoints_created,
-        "status": f"✅ Created {checkpoints_created} checkpoints" if checkpoints_created > 0 else "No new checkpoints needed",
+        "status": (
+            f"✅ Created {checkpoints_created} checkpoints"
+            if checkpoints_created > 0
+            else "No new checkpoints needed"
+        ),
     }
 
 
@@ -932,8 +965,176 @@ async def handle_compliance(store: StorageBackend, args: dict) -> dict:
             f"Review {preset.audit_frequency} audit schedule",
         ],
         "note": "Preset configuration is advisory. Actual compliance requires organizational policies "
-                "and auditor review. This tool helps technical compliance — it doesn't replace legal review.",
+        "and auditor review. This tool helps technical compliance — it doesn't replace legal review.",
     }
+
+
+async def handle_health(store: StorageBackend) -> dict:
+    """Handle witness_health tool call.
+
+    Returns a comprehensive health check of the witness system.
+    """
+    import importlib.metadata
+
+    # Server version
+    try:
+        version = importlib.metadata.version("mcp-witness")
+    except Exception:
+        version = "unknown"
+
+    # DB connectivity
+    db_ok = False
+    try:
+        stats = await store.get_stats()
+        db_ok = True
+    except Exception:
+        pass
+
+    # Anchor stats
+    try:
+        anchor_stats = await store.get_anchor_stats()
+    except Exception:
+        anchor_stats = {
+            "total_checkpoints": 0,
+            "total_anchors": 0,
+            "total_cost_usd": 0.0,
+            "by_type": {},
+        }
+
+    # Checkpoint stats
+    try:
+        checkpoints = await store.list_checkpoints(limit=1)
+        latest_checkpoint = checkpoints[0].id if checkpoints else None
+        checkpoint_count = len(checkpoints)
+    except Exception:
+        checkpoint_count = 0
+        latest_checkpoint = None
+
+    # Signing status
+    try:
+        signing_pk = await store.get_signer_public_key()
+        signing_enabled = signing_pk is not None
+    except Exception:
+        signing_pk = None
+        signing_enabled = False
+
+    # Chain validity
+    chain_valid = stats.chain_valid if db_ok else False
+
+    return {
+        "status": "healthy" if db_ok else "unhealthy",
+        "version": version,
+        "database": {
+            "connected": db_ok,
+            "total_records": stats.total_records if db_ok else 0,
+            "chain_valid": chain_valid,
+            "chain_status": "✅ Valid" if chain_valid else "❌ Integrity issues detected",
+        },
+        "signing": {
+            "enabled": signing_enabled,
+            "public_key": signing_pk,
+        },
+        "checkpoints": {
+            "total": checkpoint_count,
+            "latest_id": latest_checkpoint,
+        },
+        "anchors": {
+            "total": anchor_stats["total_anchors"],
+            "total_cost_usd": anchor_stats["total_cost_usd"],
+            "by_type": anchor_stats["by_type"],
+        },
+        "compliance_presets": ["hipaa", "gdpr", "sox", "fedramp", "soc2", "pci_dss"],
+    }
+
+
+async def handle_delete(store: StorageBackend, args: dict) -> dict:
+    """Handle witness_delete tool call (GDPR right to erasure).
+
+    Redacts records instead of deleting to preserve chain integrity.
+    """
+    record_id = args.get("record_id")
+    session_id = args.get("session_id")
+    reason = args.get("reason", "")
+
+    if not reason:
+        return {"error": "'reason' is required for deletion/redaction (audit trail)"}
+
+    if not record_id and not session_id:
+        return {"error": "Provide record_id or session_id"}
+
+    if record_id and session_id:
+        return {"error": "Provide record_id or session_id, not both"}
+
+    try:
+        # SqliteStorage has redact_record, PgStorage does not yet.
+        # Use duck typing with a fallback.
+        redact_method = getattr(store, "redact_record", None)
+        if redact_method is None:
+            return {"error": "This storage backend does not support record redaction"}
+
+        result = await redact_method(
+            record_id=record_id,
+            session_id=session_id,
+            reason=reason,
+        )
+
+        return {
+            "success": result["redacted_count"] > 0,
+            "action": result["action"],
+            "reason": result["reason"],
+            "redacted_count": result["redacted_count"],
+            "redacted_ids": result["redacted_ids"],
+            "note": result["note"],
+            "gdpr_notice": "This operation is logged for GDPR compliance. "
+            "Data fields are nulled; hash chain integrity is preserved.",
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+async def handle_search(store: StorageBackend, args: dict) -> dict:
+    """Handle witness_search tool call.
+
+    Full-text search (LIKE-based) across reasoning, input_data, output_data.
+    """
+    query = args.get("query", "")
+    limit = args.get("limit", 50)
+
+    if not query:
+        return {"error": "'query' is required"}
+
+    try:
+        search_method = getattr(store, "search", None)
+        if search_method is None:
+            return {"error": "This storage backend does not support search"}
+
+        records = await search_method(query=query, limit=limit)
+
+        return {
+            "count": len(records),
+            "query": query,
+            "records": [
+                {
+                    "id": str(r.id),
+                    "sequence": r.sequence,
+                    "timestamp": r.timestamp.isoformat(),
+                    "action_type": r.action_type.value,
+                    "tool_name": r.tool_name,
+                    "actor_id": r.actor_id,
+                    "session_id": r.session_id,
+                    "sensitivity": r.sensitivity.value,
+                    "reasoning": (
+                        r.reasoning[:200] + "..."
+                        if r.reasoning and len(r.reasoning) > 200
+                        else r.reasoning
+                    ),
+                    "record_hash": r.record_hash[:16] + "...",
+                }
+                for r in records
+            ],
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 async def main():

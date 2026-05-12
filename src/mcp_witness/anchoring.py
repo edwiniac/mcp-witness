@@ -85,9 +85,10 @@ def compute_ipfs_cidv1(content: bytes) -> str:
 
 class AnchorType(str, Enum):
     """Types of external trust anchors."""
-    TSA = "tsa"              # RFC 3161 Timestamp Authority
-    OPENTIMESTAMPS = "ots"   # OpenTimestamps (Bitcoin)
-    IPFS = "ipfs"            # IPFS content addressing
+
+    TSA = "tsa"  # RFC 3161 Timestamp Authority
+    OPENTIMESTAMPS = "ots"  # OpenTimestamps (Bitcoin)
+    IPFS = "ipfs"  # IPFS content addressing
 
 
 @dataclass
@@ -200,7 +201,7 @@ def _der_decode_length(data: bytes, offset: int) -> tuple[int, int]:
     if offset + 1 + num_bytes > len(data):
         raise ValueError("Truncated DER: length bytes out of bounds")
 
-    length = int.from_bytes(data[offset + 1:offset + 1 + num_bytes], "big")
+    length = int.from_bytes(data[offset + 1 : offset + 1 + num_bytes], "big")
     return length, 1 + num_bytes
 
 
@@ -264,25 +265,20 @@ def _build_tsa_request(merkle_root_hex: str) -> bytes:
       }
     """
     # AlgorithmIdentifier: sha256 + NULL params
-    algo_id = _der_sequence(
-        _der_oid(_SHA256_OID) + _der_null()
-    )
+    algo_id = _der_sequence(_der_oid(_SHA256_OID) + _der_null())
 
     # MessageImprint: AlgorithmIdentifier + hash value
     hash_bytes = bytes.fromhex(merkle_root_hex)
-    message_imprint = _der_sequence(
-        algo_id + _der_octet_string(hash_bytes)
-    )
+    message_imprint = _der_sequence(algo_id + _der_octet_string(hash_bytes))
 
     # Generate a random nonce for replay protection
     nonce = int.from_bytes(os.urandom(8), "big")
 
     # TimeStampReq: version(1) + messageImprint + nonce
-    request = _der_sequence(
-        _der_integer(1) + message_imprint + _der_integer(nonce)
-    )
+    request = _der_sequence(_der_integer(1) + message_imprint + _der_integer(nonce))
 
     return request
+
 
 # ---------------------------------------------------------------------------
 # TSA Provider
@@ -324,7 +320,9 @@ class TSAProvider(AnchorProvider):
         and returns the TimeStampResp token as a verifiable receipt.
         """
         timestamp = datetime.now(timezone.utc)
-        receipt_id = hashlib.sha256(f"tsa_{merkle_root}_{timestamp.isoformat()}".encode()).hexdigest()[:32]
+        receipt_id = hashlib.sha256(
+            f"tsa_{merkle_root}_{timestamp.isoformat()}".encode()
+        ).hexdigest()[:32]
 
         try:
             # Build proper DER-encoded RFC 3161 TimeStampReq
@@ -334,7 +332,7 @@ class TSAProvider(AnchorProvider):
                 response = await client.post(
                     self.tsa_url,
                     content=request_der,
-                    headers={"Content-Type": "application/timestamp-query"}
+                    headers={"Content-Type": "application/timestamp-query"},
                 )
 
                 if response.status_code == 200:
@@ -357,12 +355,21 @@ class TSAProvider(AnchorProvider):
                 else:
                     raise Exception(f"TSA returned HTTP {response.status_code}")
 
-        except Exception:
+        except Exception as exc:
             # TSA unavailable: create a local attestation (still auditable,
             # but relies on our own clock, not external TSA)
-            pass
+            logger.error(
+                "TSA request failed for merkle_root=%s: %s: %s",
+                merkle_root,
+                type(exc).__name__,
+                exc,
+            )
 
-        # Fallback: signed local attestation
+            # Save error info before exc goes out of scope (Python 3 cleans up except vars)
+            error_name = type(exc).__name__
+            error_msg = str(exc)
+
+        # Fallback: explicit local attestation with error details
         attestation = {
             "version": "mcp-witness-tsa-v1",
             "type": "local_attestation",
@@ -382,7 +389,11 @@ class TSAProvider(AnchorProvider):
             receipt_id=f"local_{attestation_hash[:28]}",
             raw_receipt=attestation_bytes,
             cost_usd=0.0,
-            metadata={"type": "local_attestation"},
+            metadata={
+                "type": "local_attestation",
+                "status": "local_fallback",
+                "error": f"{error_name}: {error_msg}",
+            },
         )
 
     @staticmethod
@@ -501,7 +512,7 @@ class OpenTimestampsProvider(AnchorProvider):
                     response = await client.post(
                         f"{server}/digest",
                         content=hash_bytes,
-                        headers={"Content-Type": "application/octet-stream"}
+                        headers={"Content-Type": "application/octet-stream"},
                     )
 
                     if response.status_code == 200:
@@ -517,12 +528,17 @@ class OpenTimestampsProvider(AnchorProvider):
                                 "server": server,
                                 "status": "pending_confirmation",
                                 "note": "Bitcoin confirmation typically takes 1-24 hours",
+                                "verification": "structural_only",
                             },
                         )
                 except Exception:
                     continue
 
         # All servers failed
+        logger.error(
+            "All OpenTimestamps servers failed for merkle_root=%s",
+            merkle_root,
+        )
         raise Exception("All OpenTimestamps servers failed")
 
     @staticmethod
@@ -603,6 +619,11 @@ class OpenTimestampsProvider(AnchorProvider):
         """
         Verify an OpenTimestamps receipt.
 
+        *** WARNING: Structural-only verification ***
+        This only validates the OTS binary structure is well-formed.
+        It does NOT check against the Bitcoin blockchain.
+        Full Bitcoin confirmation requires the ``ots`` CLI tool.
+
         Validates the OTS binary structure:
         - raw_receipt must not be None or empty
         - Must start with OTS magic bytes (\x00\x00, a timestamp tag)
@@ -626,6 +647,12 @@ class OpenTimestampsProvider(AnchorProvider):
         if raw[0] != 0x00:
             return False
 
+        logger.warning(
+            "OTS verification is structural-only — does NOT confirm Bitcoin confirmation. "
+            "Receipt: %s",
+            receipt.receipt_id,
+        )
+
         # Parse the top-level timestamp structure
         return self._ots_validate_structure(raw, 0, len(raw))
 
@@ -638,12 +665,7 @@ class IPFSProvider(AnchorProvider):
     Free, but doesn't provide timestamps (combine with TSA).
     """
 
-    def __init__(
-        self,
-        api_key: str = None,
-        api_secret: str = None,
-        timeout: float = 30.0
-    ):
+    def __init__(self, api_key: str = None, api_secret: str = None, timeout: float = 30.0):
         self.api_key = api_key or os.getenv("PINATA_API_KEY")
         self.api_secret = api_secret or os.getenv("PINATA_API_SECRET")
         self.timeout = timeout
@@ -690,13 +712,13 @@ class IPFSProvider(AnchorProvider):
                 "https://api.pinata.cloud/pinning/pinJSONToIPFS",
                 json={
                     "pinataContent": data,
-                    "pinataMetadata": {"name": f"mcp-witness-{data['merkle_root'][:8]}"}
+                    "pinataMetadata": {"name": f"mcp-witness-{data['merkle_root'][:8]}"},
                 },
                 headers={
                     "pinata_api_key": self.api_key,
                     "pinata_secret_api_key": self.api_secret,
                     "Content-Type": "application/json",
-                }
+                },
             )
 
             if response.status_code == 200:
@@ -719,12 +741,14 @@ class IPFSProvider(AnchorProvider):
         Verify IPFS content integrity.
 
         Fetches content from the IPFS gateway, computes the CID locally,
-        and compares it with the receipt's CID. Falls back to a HEAD
-        check (confirming accessibility) only if the GET request fails.
+        and compares it with the receipt's CID.
+
+        If the GET request is unreachable or returns a non-200 status,
+        verification returns False — a HEAD response only proves server
+        reachability, not content integrity.
 
         Returns:
-            True if content integrity is verified or if content is
-            confirmed accessible (fallback).
+            True if content integrity is verified, False otherwise.
         """
         if not receipt.verification_url or not receipt.receipt_id:
             return False
@@ -732,32 +756,38 @@ class IPFSProvider(AnchorProvider):
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:
                 # Fetch content from gateway
-                response = await client.get(
-                    receipt.verification_url,
-                    follow_redirects=True
-                )
+                response = await client.get(receipt.verification_url, follow_redirects=True)
                 if response.status_code != 200:
+                    logger.warning(
+                        "IPFS verification failed: GET %s returned status %d",
+                        receipt.verification_url,
+                        response.status_code,
+                    )
                     return False
 
                 # Compute CID locally and compare with receipt
                 content = response.content
                 computed_cid = compute_ipfs_cidv0(content)
-                return computed_cid == receipt.receipt_id
-
-            except Exception:
-                # Fall back to HEAD check with warning
-                logger.warning(
-                    "IPFS fetch failed for %s, falling back to HEAD accessibility check",
-                    receipt.verification_url,
-                )
-                try:
-                    response = await client.head(
+                if computed_cid != receipt.receipt_id:
+                    logger.warning(
+                        "IPFS verification failed: CID mismatch for %s. "
+                        "Expected %s, computed %s",
                         receipt.verification_url,
-                        follow_redirects=True
+                        receipt.receipt_id,
+                        computed_cid,
                     )
-                    return response.status_code == 200
-                except Exception:
                     return False
+                return True
+
+            except Exception as exc:
+                logger.warning(
+                    "IPFS verification failed: cannot fetch %s: %s: %s. "
+                    "Cannot verify without fetching content.",
+                    receipt.verification_url,
+                    type(exc).__name__,
+                    exc,
+                )
+                return False
 
 
 class AnchorService:
@@ -821,10 +851,7 @@ class AnchorService:
 
         for provider, result in zip(providers, results):
             if isinstance(result, Exception):
-                errors.append({
-                    "provider": provider.name,
-                    "error": str(result)
-                })
+                errors.append({"provider": provider.name, "error": str(result)})
             else:
                 receipts.append(result)
 

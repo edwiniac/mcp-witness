@@ -58,6 +58,12 @@ logger = logging.getLogger(__name__)
 CHECKPOINT_INTERVAL = int(os.getenv("MCP_WITNESS_CHECKPOINT_INTERVAL", "1000"))
 AUTO_ANCHOR = os.getenv("MCP_WITNESS_AUTO_ANCHOR", "false").lower() == "true"
 
+# Schema versioning for safe migrations
+SCHEMA_VERSION = 1
+
+# Auto-cleanup interval (every N record inserts)
+CLEANUP_INTERVAL = int(os.getenv("MCP_WITNESS_CLEANUP_INTERVAL", "100"))
+
 # Payload size limit (10 MB default)
 MAX_PAYLOAD_SIZE = int(os.getenv("MCP_WITNESS_MAX_PAYLOAD_SIZE", str(10 * 1024 * 1024)))
 
@@ -75,9 +81,7 @@ def _validate_session_id(session_id: str) -> None:
     if not session_id:
         return  # Empty is allowed
     if len(session_id) > MAX_SESSION_ID_LENGTH:
-        raise ValueError(
-            f"session_id exceeds maximum length of {MAX_SESSION_ID_LENGTH}"
-        )
+        raise ValueError(f"session_id exceeds maximum length of {MAX_SESSION_ID_LENGTH}")
     if not ALLOWED_SESSION_ID_PATTERN.match(session_id):
         raise ValueError(
             "session_id contains invalid characters; "
@@ -91,9 +95,7 @@ def _validate_payload_size(data: Optional[dict], label: str = "data") -> None:
         return
     size = len(json.dumps(data, default=str).encode())
     if size > MAX_PAYLOAD_SIZE:
-        raise ValueError(
-            f"{label} size ({size} bytes) exceeds limit ({MAX_PAYLOAD_SIZE} bytes)"
-        )
+        raise ValueError(f"{label} size ({size} bytes) exceeds limit ({MAX_PAYLOAD_SIZE} bytes)")
 
 
 class SqliteStorage(StorageBackend):
@@ -114,6 +116,7 @@ class SqliteStorage(StorageBackend):
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db: Optional[aiosqlite.Connection] = None
         self._nonce_insert_count = 0
+        self._record_insert_count = 0
 
     async def connect(self) -> None:
         """Connect to the database and ensure schema exists."""
@@ -122,6 +125,9 @@ class SqliteStorage(StorageBackend):
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA busy_timeout=5000")
         await self._create_schema()
+        await self._check_schema_version()
+        # Run cleanup on startup to remove any expired records
+        await self.cleanup_expired()
 
     async def close(self) -> None:
         """Close the database connection."""
@@ -163,8 +169,12 @@ class SqliteStorage(StorageBackend):
                 signature TEXT,
                 signer_public_key TEXT,
 
+                org_id TEXT DEFAULT NULL,
+
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE INDEX IF NOT EXISTS idx_org_id ON witness_records(org_id);
 
             CREATE INDEX IF NOT EXISTS idx_sequence ON witness_records(sequence);
             CREATE INDEX IF NOT EXISTS idx_timestamp ON witness_records(timestamp);
@@ -228,11 +238,70 @@ class SqliteStorage(StorageBackend):
                 ttl_seconds INTEGER NOT NULL DEFAULT 3600
             );
             CREATE INDEX IF NOT EXISTS idx_nonces_created ON witness_idempotency_nonces(created_at);
+
+            -- Schema version tracking for safe migrations
+            CREATE TABLE IF NOT EXISTS witness_schema_version (
+                version INTEGER NOT NULL,
+                applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
         """)
+
+        # Initialize schema version if not set
+        cursor = await self._db.execute("SELECT COUNT(*) FROM witness_schema_version")
+        count = (await cursor.fetchone())[0]
+        if count == 0:
+            await self._db.execute(
+                "INSERT INTO witness_schema_version (version) VALUES (?)",
+                (SCHEMA_VERSION,),
+            )
+
         await self._db.commit()
 
         # Initialize anchor service
         self._anchor_service = AnchorService()
+
+    async def _check_schema_version(self) -> None:
+        """Check and migrate the database schema if needed.
+
+        Reads the current schema version from ``witness_schema_version``
+        and runs any incremental ALTER TABLE migrations to bring the
+        schema up to SCHEMA_VERSION.
+        """
+        cursor = await self._db.execute("SELECT MAX(version) FROM witness_schema_version")
+        row = await cursor.fetchone()
+        current_version = row[0] if row and row[0] else 0
+
+        if current_version < SCHEMA_VERSION:
+            logger.info(
+                "Schema migration: %d -> %d",
+                current_version,
+                SCHEMA_VERSION,
+            )
+            await self._migrate_schema(current_version, SCHEMA_VERSION)
+
+            # Record the new version
+            await self._db.execute(
+                "INSERT INTO witness_schema_version (version) VALUES (?)",
+                (SCHEMA_VERSION,),
+            )
+            await self._db.commit()
+            logger.info("Schema migration to v%d complete", SCHEMA_VERSION)
+
+    async def _migrate_schema(self, from_version: int, to_version: int) -> None:
+        """Run incremental schema migrations.
+
+        Each version step adds ALTER TABLE or other DDL needed.
+        Currently at version 1 with no pending migrations.
+        """
+        # Future migrations go here as if/elif blocks:
+        #
+        # if from_version < 2:
+        #     await self._db.execute(
+        #         "ALTER TABLE witness_records ADD COLUMN new_column TEXT"
+        #     )
+        # if from_version < 3:
+        #     ...
+        pass
 
     async def _get_last_record(self) -> Optional[dict]:
         """Get the last record in the chain."""
@@ -261,10 +330,12 @@ class SqliteStorage(StorageBackend):
             except aiosqlite.OperationalError as e:
                 if "database is locked" in str(e).lower():
                     last_exc = e
-                    delay = RETRY_BASE_DELAY * (2 ** attempt)
+                    delay = RETRY_BASE_DELAY * (2**attempt)
                     logger.warning(
                         "SQLITE_BUSY on attempt %d/%d, retrying in %.2fs",
-                        attempt + 1, MAX_RETRIES, delay,
+                        attempt + 1,
+                        MAX_RETRIES,
+                        delay,
                     )
                     await asyncio.sleep(delay)
                 else:
@@ -286,6 +357,7 @@ class SqliteStorage(StorageBackend):
         sensitivity: Sensitivity = Sensitivity.INTERNAL,
         retention_days: int = 365,
         redact_fields: Optional[list[str]] = None,
+        org_id: Optional[str] = None,
     ) -> WitnessRecord:
         """
         Record a new action to the witness chain.
@@ -364,6 +436,9 @@ class SqliteStorage(StorageBackend):
                     signature = sign_record_hash(record_hash, signing_key)
                     signer_pk = get_public_key_hex()
 
+                # Resolve org_id: prefer explicit, fall back to env var
+                resolved_org_id = org_id or os.getenv("MCP_WITNESS_ORG_ID") or None
+
                 await self._db.execute(
                     """
                     INSERT INTO witness_records (
@@ -373,8 +448,9 @@ class SqliteStorage(StorageBackend):
                         input_hash, output_hash,
                         context, reasoning, confidence,
                         sensitivity, retention_days, tsa_receipt, anchored_at,
-                        redacted_fields, signature, signer_public_key
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        redacted_fields, signature, signer_public_key,
+                        org_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         str(record_id),
@@ -401,7 +477,8 @@ class SqliteStorage(StorageBackend):
                         json.dumps(redacted_fields),
                         signature,
                         signer_pk,
-                    )
+                        resolved_org_id,
+                    ),
                 )
 
                 await self._db.commit()
@@ -410,7 +487,9 @@ class SqliteStorage(StorageBackend):
                 await self._db.execute("ROLLBACK")
                 raise
 
-        sequence, prev_hash, record_hash, signature, signer_pk = await self._retry_on_busy(_do_insert)
+        sequence, prev_hash, record_hash, signature, signer_pk = await self._retry_on_busy(
+            _do_insert
+        )
 
         # Create record object
         record = WitnessRecord(
@@ -441,11 +520,17 @@ class SqliteStorage(StorageBackend):
         # Check if we should create a checkpoint (outside the transaction)
         await self._maybe_create_checkpoint(record.sequence)
 
+        # Periodic cleanup of expired records (every N inserts)
+        self._record_insert_count += 1
+        if self._record_insert_count % CLEANUP_INTERVAL == 0:
+            await self.cleanup_expired()
+
         return record
 
     async def batch_record(
         self,
         records: list[dict],
+        org_id: Optional[str] = None,
     ) -> list[WitnessRecord]:
         """
         Batch insert multiple records in a single transaction.
@@ -513,10 +598,7 @@ class SqliteStorage(StorageBackend):
                 timestamp=timestamp.isoformat(),
             )
             if not await check_idempotency(self, action_fp):
-                raise ValueError(
-                    "Duplicate action detected. "
-                    "Action already recorded recently."
-                )
+                raise ValueError("Duplicate action detected. " "Action already recorded recently.")
 
             # Process redaction
             processed_input = do_redact(input_data, redact_fields_list) if input_data else None
@@ -524,25 +606,27 @@ class SqliteStorage(StorageBackend):
 
             record_id = uuid4()
 
-            processed.append({
-                "action_type": action_type,
-                "actor_type": actor_type,
-                "actor_id": actor_id,
-                "session_id": session_id,
-                "tool_name": tool_name,
-                "processed_input": processed_input,
-                "processed_output": processed_output,
-                "input_hash": input_hash,
-                "output_hash": output_hash,
-                "timestamp": timestamp,
-                "context": context,
-                "reasoning": reasoning,
-                "confidence": confidence,
-                "sensitivity": sensitivity,
-                "retention_days": retention_days,
-                "record_id": record_id,
-                "redact_fields_list": redact_fields_list,
-            })
+            processed.append(
+                {
+                    "action_type": action_type,
+                    "actor_type": actor_type,
+                    "actor_id": actor_id,
+                    "session_id": session_id,
+                    "tool_name": tool_name,
+                    "processed_input": processed_input,
+                    "processed_output": processed_output,
+                    "input_hash": input_hash,
+                    "output_hash": output_hash,
+                    "timestamp": timestamp,
+                    "context": context,
+                    "reasoning": reasoning,
+                    "confidence": confidence,
+                    "sensitivity": sensitivity,
+                    "retention_days": retention_days,
+                    "record_id": record_id,
+                    "redact_fields_list": redact_fields_list,
+                }
+            )
 
         # Rate limiting (once for the batch)
         await check_rate_limit(self)
@@ -601,7 +685,11 @@ class SqliteStorage(StorageBackend):
                             action_type.value,
                             rec["tool_name"],
                             json.dumps(rec["processed_input"]) if rec["processed_input"] else None,
-                            json.dumps(rec["processed_output"]) if rec["processed_output"] else None,
+                            (
+                                json.dumps(rec["processed_output"])
+                                if rec["processed_output"]
+                                else None
+                            ),
                             rec["input_hash"],
                             rec["output_hash"],
                             json.dumps(rec["context"]) if rec["context"] else None,
@@ -614,7 +702,7 @@ class SqliteStorage(StorageBackend):
                             json.dumps(rec["redact_fields_list"]),
                             signature,
                             signer_pk,
-                        )
+                        ),
                     )
 
                     record = WitnessRecord(
@@ -658,13 +746,18 @@ class SqliteStorage(StorageBackend):
         for rec in result_records:
             await self._maybe_create_checkpoint(rec.sequence)
 
+        # Periodic cleanup of expired records (every N inserts)
+        self._record_insert_count += len(result_records)
+        if self._record_insert_count >= CLEANUP_INTERVAL:
+            await self.cleanup_expired()
+            self._record_insert_count = 0
+
         return result_records
 
     async def get_by_id(self, record_id: str | UUID) -> Optional[WitnessRecord]:
         """Get a record by its ID."""
         cursor = await self._db.execute(
-            "SELECT * FROM witness_records WHERE id = ?",
-            (str(record_id),)
+            "SELECT * FROM witness_records WHERE id = ?", (str(record_id),)
         )
         row = await cursor.fetchone()
         return self._row_to_record(row) if row else None
@@ -672,8 +765,7 @@ class SqliteStorage(StorageBackend):
     async def get_by_sequence(self, sequence: int) -> Optional[WitnessRecord]:
         """Get a record by its sequence number."""
         cursor = await self._db.execute(
-            "SELECT * FROM witness_records WHERE sequence = ?",
-            (sequence,)
+            "SELECT * FROM witness_records WHERE sequence = ?", (sequence,)
         )
         row = await cursor.fetchone()
         return self._row_to_record(row) if row else None
@@ -725,7 +817,43 @@ class SqliteStorage(StorageBackend):
             ORDER BY sequence ASC
             LIMIT ? OFFSET ?
             """,
-            (*params, limit, offset)
+            (*params, limit, offset),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_record(row) for row in rows]
+
+    async def search(
+        self,
+        query: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[WitnessRecord]:
+        """Search records using LIKE pattern matching.
+
+        Searches across reasoning, input_data, and output_data fields.
+        SQLite does not have full-text search without the FTS5 extension,
+        so this falls back to LIKE-based matching on the reasoning field
+        (the most searchable text field).
+
+        Args:
+            query: Search string (used with LIKE '%query%')
+            limit: Maximum records to return (default 50)
+            offset: Number of records to skip (default 0)
+
+        Returns:
+            List of matching WitnessRecords sorted by sequence DESC
+        """
+        pattern = f"%{query}%"
+        cursor = await self._db.execute(
+            """
+            SELECT * FROM witness_records
+            WHERE reasoning LIKE ?
+               OR input_data LIKE ?
+               OR output_data LIKE ?
+            ORDER BY sequence DESC
+            LIMIT ? OFFSET ?
+            """,
+            (pattern, pattern, pattern, limit, offset),
         )
         rows = await cursor.fetchall()
         return [self._row_to_record(row) for row in rows]
@@ -754,8 +882,7 @@ class SqliteStorage(StorageBackend):
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
         cursor = await self._db.execute(
-            f"SELECT * FROM witness_records WHERE {where_clause} ORDER BY sequence ASC",
-            params
+            f"SELECT * FROM witness_records WHERE {where_clause} ORDER BY sequence ASC", params
         )
         rows = await cursor.fetchall()
 
@@ -771,8 +898,7 @@ class SqliteStorage(StorageBackend):
         if first_sequence > 0:
             # Look up the previous record to get the expected prev_hash
             cursor = await self._db.execute(
-                "SELECT record_hash FROM witness_records WHERE sequence = ?",
-                (first_sequence - 1,)
+                "SELECT record_hash FROM witness_records WHERE sequence = ?", (first_sequence - 1,)
             )
             prev_row = await cursor.fetchone()
             prev_hash = prev_row[0] if prev_row else GENESIS_HASH
@@ -830,18 +956,30 @@ class SqliteStorage(StorageBackend):
                 except Exception:
                     if first_invalid is None:
                         first_invalid = record.sequence
-                    issues.append(
-                        f"Ed25519 signature data error at sequence {record.sequence}"
-                    )
+                    issues.append(f"Ed25519 signature data error at sequence {record.sequence}")
 
             prev_hash = record.record_hash
 
-        return VerificationResult(
+        result = VerificationResult(
             valid=len(issues) == 0,
             records_checked=records_checked,
             first_invalid_sequence=first_invalid,
             issues=issues,
         )
+
+        # Fire webhook on chain failure (non-blocking, fails gracefully)
+        if not result.valid:
+            try:
+                from .webhook import is_webhook_configured, notify_chain_failure
+
+                if is_webhook_configured():
+                    import asyncio
+
+                    asyncio.create_task(notify_chain_failure(result))
+            except Exception:
+                logger.debug("Webhook notification skipped (not configured or import failed)")
+
+        return result
 
     async def get_chain_for_session(self, session_id: str) -> list[WitnessRecord]:
         """Get all records for a session in order."""
@@ -876,9 +1014,7 @@ class SqliteStorage(StorageBackend):
         )
         unique_sessions = (await cursor.fetchone())[0]
 
-        cursor = await self._db.execute(
-            "SELECT COUNT(DISTINCT actor_id) FROM witness_records"
-        )
+        cursor = await self._db.execute("SELECT COUNT(DISTINCT actor_id) FROM witness_records")
         unique_actors = (await cursor.fetchone())[0]
 
         # By action type
@@ -927,7 +1063,7 @@ class SqliteStorage(StorageBackend):
             SET tsa_receipt = ?, anchored_at = ?
             WHERE id = ?
             """,
-            (tsa_receipt, anchored_at, str(record_id))
+            (tsa_receipt, anchored_at, str(record_id)),
         )
         await self._db.commit()
         return cursor.rowcount > 0
@@ -938,14 +1074,15 @@ class SqliteStorage(StorageBackend):
 
     async def cleanup_expired(self) -> int:
         """Delete records past their retention period."""
-        cursor = await self._db.execute(
-            """
+        cursor = await self._db.execute("""
             DELETE FROM witness_records
             WHERE date(timestamp, '+' || retention_days || ' days') < date('now')
-            """
-        )
+            """)
+        deleted = cursor.rowcount
         await self._db.commit()
-        return cursor.rowcount
+        if deleted > 0:
+            logger.info("cleanup_expired: deleted %d expired records", deleted)
+        return deleted
 
     # =========================================================================
     # Checkpoint Methods
@@ -962,7 +1099,7 @@ class SqliteStorage(StorageBackend):
         # Get all records in this range
         cursor = await self._db.execute(
             "SELECT record_hash FROM witness_records WHERE sequence >= ? AND sequence <= ? ORDER BY sequence",
-            (from_seq, to_seq)
+            (from_seq, to_seq),
         )
         rows = await cursor.fetchall()
         record_hashes = [row[0] for row in rows]
@@ -987,7 +1124,7 @@ class SqliteStorage(StorageBackend):
                 len(record_hashes),
                 record_hashes[-1],
                 json.dumps(tree.to_dict()),
-            )
+            ),
         )
         await self._db.commit()
 
@@ -1014,8 +1151,7 @@ class SqliteStorage(StorageBackend):
     async def get_checkpoint(self, checkpoint_id: int) -> Optional[Checkpoint]:
         """Get a checkpoint by ID."""
         cursor = await self._db.execute(
-            "SELECT * FROM witness_checkpoints WHERE id = ?",
-            (checkpoint_id,)
+            "SELECT * FROM witness_checkpoints WHERE id = ?", (checkpoint_id,)
         )
         row = await cursor.fetchone()
         if not row:
@@ -1035,7 +1171,7 @@ class SqliteStorage(StorageBackend):
         """Get the checkpoint containing a given sequence."""
         cursor = await self._db.execute(
             "SELECT * FROM witness_checkpoints WHERE from_sequence <= ? AND to_sequence >= ?",
-            (sequence, sequence)
+            (sequence, sequence),
         )
         row = await cursor.fetchone()
         if not row:
@@ -1054,8 +1190,7 @@ class SqliteStorage(StorageBackend):
     async def list_checkpoints(self, limit: int = 100) -> list[Checkpoint]:
         """List all checkpoints."""
         cursor = await self._db.execute(
-            "SELECT * FROM witness_checkpoints ORDER BY id DESC LIMIT ?",
-            (limit,)
+            "SELECT * FROM witness_checkpoints ORDER BY id DESC LIMIT ?", (limit,)
         )
         rows = await cursor.fetchall()
 
@@ -1082,7 +1217,7 @@ class SqliteStorage(StorageBackend):
         # Find checkpoint containing this record
         cursor = await self._db.execute(
             "SELECT * FROM witness_checkpoints WHERE from_sequence <= ? AND to_sequence >= ?",
-            (sequence, sequence)
+            (sequence, sequence),
         )
         row = await cursor.fetchone()
 
@@ -1127,7 +1262,7 @@ class SqliteStorage(StorageBackend):
         return verify_merkle_proof(
             proof_data["domain_separated_leaf_hash"],
             proof_data["proof_path"],
-            proof_data["merkle_root"]
+            proof_data["merkle_root"],
         )
 
     async def verify_chain_fast(
@@ -1154,12 +1289,31 @@ class SqliteStorage(StorageBackend):
 
         cursor = await self._db.execute(
             f"SELECT * FROM witness_checkpoints WHERE {' AND '.join(conditions)} ORDER BY id",
-            params
+            params,
         )
         checkpoints = await cursor.fetchall()
 
         if not checkpoints:
-            # No checkpoints, fall back to linear verification
+            # No checkpoints — automatically backfill before attempting fast verification.
+            # This handles fresh databases with fewer than CHECKPOINT_INTERVAL records.
+            backfilled = await self.backfill_checkpoints()
+            if backfilled > 0:
+                logger.info(
+                    "verify_chain_fast: auto-backfilled %d checkpoints",
+                    backfilled,
+                )
+                # Re-query with checkpoints now available
+                cursor = await self._db.execute(
+                    f"SELECT * FROM witness_checkpoints WHERE {' AND '.join(conditions)} ORDER BY id",
+                    params,
+                )
+                checkpoints = await cursor.fetchall()
+
+        if not checkpoints:
+            # Still no checkpoints — fall back to linear verification
+            logger.info(
+                "verify_chain_fast: no checkpoints available, falling back to linear verification"
+            )
             return await self.verify_chain(from_sequence, to_sequence)
 
         issues = []
@@ -1170,7 +1324,7 @@ class SqliteStorage(StorageBackend):
             # Get record hashes for this checkpoint
             cursor = await self._db.execute(
                 "SELECT record_hash FROM witness_records WHERE sequence >= ? AND sequence <= ? ORDER BY sequence",
-                (cp["from_sequence"], cp["to_sequence"])
+                (cp["from_sequence"], cp["to_sequence"]),
             )
             hashes = [r[0] for r in await cursor.fetchall()]
 
@@ -1189,17 +1343,28 @@ class SqliteStorage(StorageBackend):
         last_checkpointed = checkpoints[-1]["to_sequence"]
         if to_sequence is None or to_sequence > last_checkpointed:
             remainder_result = await self.verify_chain(
-                from_sequence=last_checkpointed + 1,
-                to_sequence=to_sequence
+                from_sequence=last_checkpointed + 1, to_sequence=to_sequence
             )
             issues.extend(remainder_result.issues)
             records_checked += remainder_result.records_checked
 
-        return VerificationResult(
+        result = VerificationResult(
             valid=len(issues) == 0,
             records_checked=records_checked,
             issues=issues,
         )
+
+        # Fire webhook on chain failure (non-blocking, fails gracefully)
+        if not result.valid:
+            try:
+                from .webhook import is_webhook_configured, notify_chain_failure
+
+                if is_webhook_configured():
+                    asyncio.ensure_future(notify_chain_failure(result))
+            except Exception:
+                logger.debug("Webhook notification skipped")
+
+        return result
 
     # =========================================================================
     # Anchoring Methods
@@ -1255,7 +1420,7 @@ class SqliteStorage(StorageBackend):
                     receipt.raw_receipt,
                     receipt.cost_usd,
                     json.dumps(receipt.metadata),
-                )
+                ),
             )
 
         await self._db.commit()
@@ -1264,8 +1429,7 @@ class SqliteStorage(StorageBackend):
     async def get_anchors_for_checkpoint(self, checkpoint_id: int) -> list[Anchor]:
         """Get all anchors for a checkpoint."""
         cursor = await self._db.execute(
-            "SELECT * FROM witness_anchors WHERE checkpoint_id = ?",
-            (checkpoint_id,)
+            "SELECT * FROM witness_anchors WHERE checkpoint_id = ?", (checkpoint_id,)
         )
         rows = await cursor.fetchall()
 
@@ -1280,7 +1444,9 @@ class SqliteStorage(StorageBackend):
                 raw_receipt=row["raw_receipt"],
                 cost_usd=row["cost_usd"],
                 created_at=datetime.fromisoformat(row["created_at"]),
-                verified_at=datetime.fromisoformat(row["verified_at"]) if row["verified_at"] else None,
+                verified_at=(
+                    datetime.fromisoformat(row["verified_at"]) if row["verified_at"] else None
+                ),
                 is_valid=bool(row["is_valid"]),
                 metadata=json.loads(row["metadata"]) if row["metadata"] else {},
             )
@@ -1307,15 +1473,17 @@ class SqliteStorage(StorageBackend):
             # Update verification status
             await self._db.execute(
                 "UPDATE witness_anchors SET verified_at = ?, is_valid = ? WHERE id = ?",
-                (datetime.now(timezone.utc).isoformat(), int(is_valid), anchor.id)
+                (datetime.now(timezone.utc).isoformat(), int(is_valid), anchor.id),
             )
 
-            results.append({
-                "type": anchor.anchor_type,
-                "receipt_id": anchor.receipt_id,
-                "verification_url": anchor.verification_url,
-                "valid": is_valid,
-            })
+            results.append(
+                {
+                    "type": anchor.anchor_type,
+                    "receipt_id": anchor.receipt_id,
+                    "verification_url": anchor.verification_url,
+                    "valid": is_valid,
+                }
+            )
 
         await self._db.commit()
 
@@ -1388,7 +1556,7 @@ class SqliteStorage(StorageBackend):
                 "step_2": "Verify merkle_proof path leads to merkle_root",
                 "step_3": "Verify merkle_root matches external anchors",
                 "step_4": "Verify external anchors via verification_url",
-            }
+            },
         }
 
     async def get_anchor_stats(self) -> dict:
@@ -1445,9 +1613,11 @@ class SqliteStorage(StorageBackend):
 
         # Create checkpoints for each complete interval
         for checkpoint_end in range(
-            ((last_checkpointed // CHECKPOINT_INTERVAL) + 1) * CHECKPOINT_INTERVAL + CHECKPOINT_INTERVAL - 1,
+            ((last_checkpointed // CHECKPOINT_INTERVAL) + 1) * CHECKPOINT_INTERVAL
+            + CHECKPOINT_INTERVAL
+            - 1,
             max_seq + 1,
-            CHECKPOINT_INTERVAL
+            CHECKPOINT_INTERVAL,
         ):
             if checkpoint_end <= last_checkpointed:
                 continue
@@ -1570,25 +1740,137 @@ class SqliteStorage(StorageBackend):
         return is_new
 
     async def _cleanup_expired_nonces(self) -> int:
-        """Remove nonces that have exceeded their TTL.
+        """Remove nonces that have exceeded their per-row TTL.
 
-        Deletes rows where created_at + ttl_seconds < now.
-        Uses a max TTL of 86400 seconds (24 hours) as safety bound.
+        Deletes rows where created_at + ttl_seconds < now, respecting the
+        per-row ``ttl_seconds`` value rather than a single global cutoff.
+        Also applies a maximum safety bound of 86400 seconds (24 hours)
+        to catch any rows with corrupted/default TTLs.
         """
-        max_ttl = 86400  # 24 hours in seconds
         now = datetime.now(timezone.utc)
-        # Delete: created_at < now - ttl_seconds
-        # Since SQLite can't easily do INTERVAL with a per-row column,
-        # we compute cutoff as now and rely on rows having their ttl_seconds
-        # embedded. A simpler approach: delete everything older than max_ttl.
+        # 1) Delete rows past their per-row ttl_seconds
+        #    SQLite datetime arithmetic: created_at + ttl_seconds seconds < now
+        cursor = await self._db.execute(
+            """
+            DELETE FROM witness_idempotency_nonces
+            WHERE datetime(created_at, '+' || ttl_seconds || ' seconds') < datetime('now')
+            """,
+        )
+        per_row_deleted = cursor.rowcount
+        await self._db.commit()
+
+        # 2) Safety bound: also remove anything older than 24 hours
+        #    regardless of per-row ttl (catches corrupted/invalid rows)
+        safety_ttl = 86400  # 24 hours
         from datetime import timedelta
-        delete_before = (now - timedelta(seconds=max_ttl)).isoformat()
+
+        delete_before = (now - timedelta(seconds=safety_ttl)).isoformat()
         cursor = await self._db.execute(
             "DELETE FROM witness_idempotency_nonces WHERE created_at < ?",
             (delete_before,),
         )
+        safety_deleted = cursor.rowcount  # Only rows NOT already removed by per-row TTL
         await self._db.commit()
-        return cursor.rowcount
+
+        total = per_row_deleted + safety_deleted
+        if total > 0:
+            logger.info(
+                "cleanup_expired_nonces: deleted %d nonces " "(per-row TTL: %d, safety bound: %d)",
+                total,
+                per_row_deleted,
+                safety_deleted,
+            )
+
+        return total
+
+    async def redact_record(
+        self,
+        record_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        reason: str = "",
+    ) -> dict:
+        """Redact records for GDPR right to erasure.
+
+        Instead of deleting (which breaks chain integrity), this nulls
+        the data fields and marks the record as redacted. The hash chain
+        remains intact since we don't alter prev_hash or record_hash.
+
+        Args:
+            record_id: Single record to redact
+            session_id: All records in this session to redact (GDPR right to erasure)
+            reason: Why the redaction is being done (required for audit)
+
+        Returns:
+            Dict with redaction summary
+        """
+        if not record_id and not session_id:
+            raise ValueError("Must provide record_id or session_id")
+
+        if record_id and session_id:
+            raise ValueError("Provide record_id or session_id, not both")
+
+        redacted_ids = []
+        redacted_count = 0
+
+        if record_id:
+            # Redact a single record
+            await self._db.execute(
+                """
+                UPDATE witness_records
+                SET input_data = NULL,
+                    output_data = NULL,
+                    reasoning = '[REDACTED: ' || ? || ']',
+                    context = NULL,
+                    redacted_fields = ?
+                WHERE id = ?
+                """,
+                (reason, json.dumps(["*GDPR_ERASURE*"]), str(record_id)),
+            )
+            await self._db.commit()
+            if self._db is not None:
+                cursor = await self._db.execute("SELECT changes()")
+                row = await cursor.fetchone()
+                affected = row[0] if row else 0
+            else:
+                affected = 0
+            if affected > 0:
+                redacted_ids.append(str(record_id))
+                redacted_count = 1
+
+        elif session_id:
+            # Redact all records for a session (GDPR right to erasure)
+            cursor = await self._db.execute(
+                "SELECT id FROM witness_records WHERE session_id = ?",
+                (session_id,),
+            )
+            rows = await cursor.fetchall()
+            row_ids = [row[0] for row in rows]
+
+            if row_ids:
+                await self._db.execute(
+                    """
+                    UPDATE witness_records
+                    SET input_data = NULL,
+                        output_data = NULL,
+                        reasoning = '[REDACTED: ' || ? || ']',
+                        context = NULL,
+                        redacted_fields = ?
+                    WHERE session_id = ?
+                    """,
+                    (reason, json.dumps(["*GDPR_ERASURE*"]), session_id),
+                )
+                await self._db.commit()
+                redacted_ids = row_ids
+                redacted_count = len(row_ids)
+
+        return {
+            "action": "redact",
+            "reason": reason,
+            "redacted_count": redacted_count,
+            "redacted_ids": redacted_ids,
+            "note": "Data fields nulled for GDPR right to erasure. "
+            "Hash chain integrity preserved (record hashes unchanged).",
+        }
 
     def _row_to_record(self, row: aiosqlite.Row) -> WitnessRecord:
         """Convert a database row to a WitnessRecord."""
@@ -1615,7 +1897,9 @@ class SqliteStorage(StorageBackend):
             tsa_receipt=row["tsa_receipt"],
             anchored_at=row["anchored_at"],
             signature=row["signature"] if "signature" in row.keys() else None,
-            signer_public_key=row["signer_public_key"] if "signer_public_key" in row.keys() else None,
+            signer_public_key=(
+                row["signer_public_key"] if "signer_public_key" in row.keys() else None
+            ),
             redacted_fields=json.loads(row["redacted_fields"]) if row["redacted_fields"] else [],
         )
 

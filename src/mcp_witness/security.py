@@ -62,10 +62,12 @@ def get_hmac_key() -> Optional[bytes]:
 # Rate Limiting — DB-backed token bucket
 # ---------------------------------------------------------------------------
 
-MAX_RECORDS_PER_SECOND = int(os.getenv(
-    "MCP_WITNESS_RATE_LIMIT",
-    "1000",
-))
+MAX_RECORDS_PER_SECOND = int(
+    os.getenv(
+        "MCP_WITNESS_RATE_LIMIT",
+        "1000",
+    )
+)
 
 MAX_RECORDS_PER_MINUTE = MAX_RECORDS_PER_SECOND * 60
 
@@ -169,13 +171,13 @@ def get_signing_key() -> Optional[object]:
             )
         _signing_key = ed25519.Ed25519PrivateKey.from_private_bytes(seed)
     else:
-        _signing_key = None
-        _public_key_bytes = None
+        # Auto-generate a random keypair for the process lifetime
+        _signing_key = ed25519.Ed25519PrivateKey.generate()
         logger.info(
-            "Ed25519 signing key not configured (MCP_WITNESS_SIGNING_KEY unset). "
-            "Records will NOT be signed. Set the env var for non-repudiation."
+            "MCP_WITNESS_SIGNING_KEY not set — auto-generated ephemeral keypair. "
+            "Records created this session will be signed with a random key. "
+            "For deterministic signing, set MCP_WITNESS_SIGNING_KEY."
         )
-        return None
 
     # Extract public key bytes
     _public_key_bytes = _signing_key.public_key().public_bytes(
@@ -183,7 +185,7 @@ def get_signing_key() -> Optional[object]:
         format=serialization.PublicFormat.Raw,
     )
     logger.info(
-        "Ed25519 signing key loaded. Public key: %s",
+        "Ed25519 public key: %s",
         _public_key_bytes.hex(),
     )
     return _signing_key
@@ -218,6 +220,7 @@ def get_public_key_hex() -> Optional[str]:
 # Error Sanitization
 # ---------------------------------------------------------------------------
 
+
 def sanitize_error(exc: Exception) -> dict:
     """
     Convert an exception to a safe error dict.
@@ -244,6 +247,7 @@ def sanitize_error(exc: Exception) -> dict:
 # ---------------------------------------------------------------------------
 # Idempotency — DB-backed nonce store
 # ---------------------------------------------------------------------------
+
 
 async def check_idempotency(
     storage: object,
@@ -283,9 +287,7 @@ def compute_action_fingerprint(
 # ---------------------------------------------------------------------------
 
 # Allowed export directory (default: current working directory)
-ALLOWED_EXPORT_DIR = Path(
-    os.getenv("MCP_WITNESS_EXPORT_DIR", str(Path.cwd()))
-).resolve()
+ALLOWED_EXPORT_DIR = Path(os.getenv("MCP_WITNESS_EXPORT_DIR", str(Path.cwd()))).resolve()
 
 
 def validate_export_path(output_path: str) -> Path:
@@ -310,10 +312,7 @@ def validate_export_path(output_path: str) -> Path:
     try:
         resolved.relative_to(ALLOWED_EXPORT_DIR)
     except ValueError:
-        raise ValueError(
-            f"Export path must be within {ALLOWED_EXPORT_DIR}. "
-            f"Got: {output_path}"
-        )
+        raise ValueError(f"Export path must be within {ALLOWED_EXPORT_DIR}. " f"Got: {output_path}")
 
     # Create parent directories if needed
     resolved.parent.mkdir(parents=True, exist_ok=True)
@@ -342,20 +341,12 @@ def validate_inputs(
     Raises ValueError for invalid inputs.
     """
     if session_id and len(session_id) > MAX_SESSION_ID_LENGTH:
-        raise ValueError(
-            f"session_id exceeds max length {MAX_SESSION_ID_LENGTH}"
-        )
+        raise ValueError(f"session_id exceeds max length {MAX_SESSION_ID_LENGTH}")
     if session_id and not SESSION_ID_PATTERN.match(session_id):
-        raise ValueError(
-            "session_id contains invalid characters"
-        )
+        raise ValueError("session_id contains invalid characters")
 
     if actor_id and len(actor_id) > MAX_ACTOR_ID_LENGTH:
-        raise ValueError(
-            f"actor_id exceeds max length {MAX_ACTOR_ID_LENGTH}"
-        )
+        raise ValueError(f"actor_id exceeds max length {MAX_ACTOR_ID_LENGTH}")
 
     if reasoning and len(reasoning) > MAX_REASONING_LENGTH:
-        raise ValueError(
-            f"reasoning exceeds max length {MAX_REASONING_LENGTH}"
-        )
+        raise ValueError(f"reasoning exceeds max length {MAX_REASONING_LENGTH}")

@@ -26,6 +26,7 @@ from mcp_witness.auth import (
 # API Key Loading Tests
 # =========================================================================
 
+
 class TestLoadApiKeys:
     """Tests for load_api_keys parsing."""
 
@@ -37,16 +38,24 @@ class TestLoadApiKeys:
 
     def test_single_key(self):
         """Single correctly formatted key is parsed."""
-        with patch.dict(os.environ, {"MCP_WITNESS_API_KEYS": "abcdef1234567890abcdef1234567890:admin"}, clear=True):
+        with patch.dict(
+            os.environ,
+            {"MCP_WITNESS_API_KEYS": "abcdef1234567890abcdef1234567890:admin"},
+            clear=True,
+        ):
             keys = load_api_keys()
         assert len(keys) == 1
         assert keys["abcdef1234567890abcdef1234567890"] == AuthRole.ADMIN
 
     def test_multiple_keys(self):
         """Multiple comma-separated keys are parsed."""
-        with patch.dict(os.environ, {
-            "MCP_WITNESS_API_KEYS": "aaa1111111111111:admin,bbb2222222222222:auditor,ccc3333333333333:writer"
-        }, clear=True):
+        with patch.dict(
+            os.environ,
+            {
+                "MCP_WITNESS_API_KEYS": "aaa1111111111111:admin,bbb2222222222222:auditor,ccc3333333333333:writer"
+            },
+            clear=True,
+        ):
             keys = load_api_keys()
         assert len(keys) == 3
         assert keys["aaa1111111111111"] == AuthRole.ADMIN
@@ -55,25 +64,21 @@ class TestLoadApiKeys:
 
     def test_key_too_short_skipped(self):
         """Keys shorter than 16 chars are skipped with a warning."""
-        with patch.dict(os.environ, {
-            "MCP_WITNESS_API_KEYS": "short:admin"
-        }, clear=True):
+        with patch.dict(os.environ, {"MCP_WITNESS_API_KEYS": "short:admin"}, clear=True):
             keys = load_api_keys()
         assert len(keys) == 0
 
     def test_invalid_role_skipped(self):
         """Unknown roles are skipped."""
-        with patch.dict(os.environ, {
-            "MCP_WITNESS_API_KEYS": "aaaaaaaaaaaaaaaaaaaa:superuser"
-        }, clear=True):
+        with patch.dict(
+            os.environ, {"MCP_WITNESS_API_KEYS": "aaaaaaaaaaaaaaaaaaaa:superuser"}, clear=True
+        ):
             keys = load_api_keys()
         assert len(keys) == 0
 
     def test_malformed_entry_skipped(self):
         """Entries without colon are skipped."""
-        with patch.dict(os.environ, {
-            "MCP_WITNESS_API_KEYS": "justakeynorole"
-        }, clear=True):
+        with patch.dict(os.environ, {"MCP_WITNESS_API_KEYS": "justakeynorole"}, clear=True):
             keys = load_api_keys()
         assert len(keys) == 0
 
@@ -88,6 +93,7 @@ class TestLoadApiKeys:
 # Authentication Tests
 # =========================================================================
 
+
 class TestAuthenticate:
     """Tests for authenticate()."""
 
@@ -99,72 +105,104 @@ class TestAuthenticate:
 
     def test_with_valid_key_admin(self):
         """Valid admin key → returns AuthRole.ADMIN."""
-        with patch.dict(os.environ, {
-            "MCP_WITNESS_API_KEYS": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:admin",
-            "MCP_WITNESS_API_KEY": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        }, clear=True):
+        with patch.dict(
+            os.environ,
+            {
+                "MCP_WITNESS_API_KEYS": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:admin",
+                "MCP_WITNESS_API_KEY": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            },
+            clear=True,
+        ):
             role = authenticate()
         assert role == AuthRole.ADMIN
 
     def test_with_valid_key_auditor(self):
         """Valid auditor key → returns AuthRole.AUDITOR."""
-        with patch.dict(os.environ, {
-            "MCP_WITNESS_API_KEYS": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:auditor",
-            "MCP_WITNESS_API_KEY": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        }, clear=True):
+        with patch.dict(
+            os.environ,
+            {
+                "MCP_WITNESS_API_KEYS": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:auditor",
+                "MCP_WITNESS_API_KEY": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            },
+            clear=True,
+        ):
             role = authenticate()
         assert role == AuthRole.AUDITOR
 
     def test_with_valid_key_writer(self):
         """Valid writer key → returns AuthRole.WRITER."""
-        with patch.dict(os.environ, {
-            "MCP_WITNESS_API_KEYS": "cccccccccccccccccccccccccccccccc:writer",
-            "MCP_WITNESS_API_KEY": "cccccccccccccccccccccccccccccccc",
-        }, clear=True):
+        with patch.dict(
+            os.environ,
+            {
+                "MCP_WITNESS_API_KEYS": "cccccccccccccccccccccccccccccccc:writer",
+                "MCP_WITNESS_API_KEY": "cccccccccccccccccccccccccccccccc",
+            },
+            clear=True,
+        ):
             role = authenticate()
         assert role == AuthRole.WRITER
 
     def test_invalid_key_returns_auditor(self):
         """Invalid key with API_KEYS configured → auditor (anonymous)."""
-        with patch.dict(os.environ, {
-            "MCP_WITNESS_API_KEYS": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:admin",
-            "MCP_WITNESS_API_KEY": "thiskeyisnotinthelist!",
-        }, clear=True):
+        with patch.dict(
+            os.environ,
+            {
+                "MCP_WITNESS_API_KEYS": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:admin",
+                "MCP_WITNESS_API_KEY": "thiskeyisnotinthelist!",
+            },
+            clear=True,
+        ):
             role = authenticate()
         assert role == AuthRole.AUDITOR
 
     def test_no_key_returns_auditor(self):
         """No API_KEY provided with keys configured → auditor."""
-        with patch.dict(os.environ, {
-            "MCP_WITNESS_API_KEYS": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:admin",
-        }, clear=True):
+        with patch.dict(
+            os.environ,
+            {
+                "MCP_WITNESS_API_KEYS": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:admin",
+            },
+            clear=True,
+        ):
             role = authenticate()
         assert role == AuthRole.AUDITOR
 
     def test_anon_writer_flag(self):
         """MCP_WITNESS_ALLOW_ANON_WRITES=true → writer for anonymous."""
-        with patch.dict(os.environ, {
-            "MCP_WITNESS_API_KEYS": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:admin",
-            "MCP_WITNESS_ALLOW_ANON_WRITES": "true",
-        }, clear=True):
+        with patch.dict(
+            os.environ,
+            {
+                "MCP_WITNESS_API_KEYS": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:admin",
+                "MCP_WITNESS_ALLOW_ANON_WRITES": "true",
+            },
+            clear=True,
+        ):
             role = authenticate()
         assert role == AuthRole.WRITER
 
     def test_deprecated_read_only(self):
         """READ_ONLY_MODE without keys → auditor (with deprecation path)."""
-        with patch.dict(os.environ, {
-            "MCP_WITNESS_READ_ONLY": "true",
-        }, clear=True):
+        with patch.dict(
+            os.environ,
+            {
+                "MCP_WITNESS_READ_ONLY": "true",
+            },
+            clear=True,
+        ):
             role = authenticate()
         assert role == AuthRole.AUDITOR
 
     def test_read_only_with_keys(self):
         """READ_ONLY_MODE with keys → still auths correctly."""
-        with patch.dict(os.environ, {
-            "MCP_WITNESS_API_KEYS": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:admin",
-            "MCP_WITNESS_API_KEY": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "MCP_WITNESS_READ_ONLY": "true",
-        }, clear=True):
+        with patch.dict(
+            os.environ,
+            {
+                "MCP_WITNESS_API_KEYS": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:admin",
+                "MCP_WITNESS_API_KEY": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "MCP_WITNESS_READ_ONLY": "true",
+            },
+            clear=True,
+        ):
             # With valid key, role should be admin regardless of read_only
             role = authenticate()
         assert role == AuthRole.ADMIN
@@ -173,6 +211,7 @@ class TestAuthenticate:
 # =========================================================================
 # Authorization Tests
 # =========================================================================
+
 
 class TestAuthorize:
     """Tests for authorize()."""
@@ -186,34 +225,56 @@ class TestAuthorize:
     def test_auditor_read_tools(self):
         """Auditor can access all read tools."""
         read_tools = {
-            "witness_verify", "witness_verify_fast", "witness_verify_anchors",
-            "witness_query", "witness_chain", "witness_stats", "witness_export",
-            "witness_checkpoints", "witness_proof",
+            "witness_verify",
+            "witness_verify_fast",
+            "witness_verify_anchors",
+            "witness_query",
+            "witness_chain",
+            "witness_stats",
+            "witness_export",
+            "witness_checkpoints",
+            "witness_proof",
         }
         for tool in read_tools:
             authorize(AuthRole.AUDITOR, tool)  # Should not raise
 
     def test_auditor_write_denied(self):
         """Auditor cannot access write tools."""
-        write_tools = {"witness_record", "witness_attest", "witness_anchor",
-                       "witness_backfill", "witness_configure_compliance"}
+        write_tools = {
+            "witness_record",
+            "witness_attest",
+            "witness_anchor",
+            "witness_backfill",
+            "witness_configure_compliance",
+        }
         for tool in write_tools:
             with pytest.raises(PermissionError):
                 authorize(AuthRole.AUDITOR, tool)
 
     def test_writer_write_tools(self):
         """Writer can access all write tools."""
-        write_tools = {"witness_record", "witness_attest", "witness_anchor",
-                       "witness_backfill", "witness_configure_compliance"}
+        write_tools = {
+            "witness_record",
+            "witness_attest",
+            "witness_anchor",
+            "witness_backfill",
+            "witness_configure_compliance",
+        }
         for tool in write_tools:
             authorize(AuthRole.WRITER, tool)  # Should not raise
 
     def test_writer_read_denied(self):
         """Writer cannot access read tools."""
         read_tools = {
-            "witness_verify", "witness_verify_fast", "witness_verify_anchors",
-            "witness_query", "witness_chain", "witness_stats", "witness_export",
-            "witness_checkpoints", "witness_proof",
+            "witness_verify",
+            "witness_verify_fast",
+            "witness_verify_anchors",
+            "witness_query",
+            "witness_chain",
+            "witness_stats",
+            "witness_export",
+            "witness_checkpoints",
+            "witness_proof",
         }
         for tool in read_tools:
             with pytest.raises(PermissionError):
@@ -234,6 +295,7 @@ class TestAuthorize:
 # =========================================================================
 # Backward Compatibility Tests
 # =========================================================================
+
 
 class TestBackwardCompat:
     """Tests for backward compatibility scenarios."""
@@ -268,12 +330,14 @@ class TestBackwardCompat:
             get_hmac_key,
             sanitize_error,
         )
+
         # Just verify they're importable
         assert callable(get_hmac_key)
         assert callable(sanitize_error)
         assert callable(compute_action_fingerprint)
         # Async wrappers
         import inspect
+
         assert inspect.iscoroutinefunction(check_rate_limit)
         assert inspect.iscoroutinefunction(check_idempotency)
 
@@ -291,6 +355,7 @@ class TestBackwardCompat:
 # =========================================================================
 # Rate Limit Wrapper Tests
 # =========================================================================
+
 
 class TestRateLimitWrapper:
     """Tests for the security.check_rate_limit async wrapper."""
@@ -317,13 +382,15 @@ class TestRateLimitWrapper:
         # After consuming the 0.x tokens, next should fail
         # max_tokens=0.5, so no full token possible
         with pytest.raises(ValueError, match="Rate limit exceeded"):
-            await sec_check_rate_limit(temp_storage, bucket_id="test_empty_bucket",
-                                       max_tokens=0.5, refill_rate=0.0)
+            await sec_check_rate_limit(
+                temp_storage, bucket_id="test_empty_bucket", max_tokens=0.5, refill_rate=0.0
+            )
 
 
 # =========================================================================
 # Idempotency Wrapper Tests
 # =========================================================================
+
 
 class TestIdempotencyWrapper:
     """Tests for the security.check_idempotency async wrapper."""
@@ -348,6 +415,7 @@ class TestIdempotencyWrapper:
 # =========================================================================
 # Fingerprint Tests
 # =========================================================================
+
 
 class TestFingerprint:
     """Tests for compute_action_fingerprint."""

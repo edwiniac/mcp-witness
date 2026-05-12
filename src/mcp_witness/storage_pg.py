@@ -76,9 +76,7 @@ def _validate_session_id(session_id: str) -> None:
     if not session_id:
         return  # Empty is allowed
     if len(session_id) > MAX_SESSION_ID_LENGTH:
-        raise ValueError(
-            f"session_id exceeds maximum length of {MAX_SESSION_ID_LENGTH}"
-        )
+        raise ValueError(f"session_id exceeds maximum length of {MAX_SESSION_ID_LENGTH}")
     if not ALLOWED_SESSION_ID_PATTERN.match(session_id):
         raise ValueError(
             "session_id contains invalid characters; "
@@ -92,9 +90,7 @@ def _validate_payload_size(data: Optional[dict], label: str = "data") -> None:
         return
     size = len(json.dumps(data, default=str).encode())
     if size > MAX_PAYLOAD_SIZE:
-        raise ValueError(
-            f"{label} size ({size} bytes) exceeds limit ({MAX_PAYLOAD_SIZE} bytes)"
-        )
+        raise ValueError(f"{label} size ({size} bytes) exceeds limit ({MAX_PAYLOAD_SIZE} bytes)")
 
 
 def _serialize_json(value: Optional[dict | list]) -> Optional[str]:
@@ -255,9 +251,7 @@ class PgStorage(StorageBackend):
 
     async def _get_last_record(self, conn: asyncpg.Connection) -> Optional[asyncpg.Record]:
         """Get the last record in the chain within an open connection."""
-        return await conn.fetchrow(
-            "SELECT * FROM witness_records ORDER BY sequence DESC LIMIT 1"
-        )
+        return await conn.fetchrow("SELECT * FROM witness_records ORDER BY sequence DESC LIMIT 1")
 
     async def _get_next_sequence(self, conn: asyncpg.Connection) -> int:
         """Get the next sequence number."""
@@ -522,10 +516,7 @@ class PgStorage(StorageBackend):
                 timestamp=timestamp.isoformat(),
             )
             if not await check_idempotency(self, action_fp):
-                raise ValueError(
-                    "Duplicate action detected. "
-                    "Action already recorded recently."
-                )
+                raise ValueError("Duplicate action detected. " "Action already recorded recently.")
 
             # Process redaction
             processed_input = do_redact(input_data, redact_fields_list) if input_data else None
@@ -533,25 +524,27 @@ class PgStorage(StorageBackend):
 
             record_id = uuid4()
 
-            processed.append({
-                "action_type": action_type,
-                "actor_type": actor_type,
-                "actor_id": actor_id,
-                "session_id": session_id,
-                "tool_name": tool_name,
-                "processed_input": processed_input,
-                "processed_output": processed_output,
-                "input_hash": input_hash,
-                "output_hash": output_hash,
-                "timestamp": timestamp,
-                "context": context,
-                "reasoning": reasoning,
-                "confidence": confidence,
-                "sensitivity": sensitivity,
-                "retention_days": retention_days,
-                "record_id": record_id,
-                "redact_fields_list": redact_fields_list,
-            })
+            processed.append(
+                {
+                    "action_type": action_type,
+                    "actor_type": actor_type,
+                    "actor_id": actor_id,
+                    "session_id": session_id,
+                    "tool_name": tool_name,
+                    "processed_input": processed_input,
+                    "processed_output": processed_output,
+                    "input_hash": input_hash,
+                    "output_hash": output_hash,
+                    "timestamp": timestamp,
+                    "context": context,
+                    "reasoning": reasoning,
+                    "confidence": confidence,
+                    "sensitivity": sensitivity,
+                    "retention_days": retention_days,
+                    "record_id": record_id,
+                    "redact_fields_list": redact_fields_list,
+                }
+            )
 
         # Rate limiting (once for the batch)
         await check_rate_limit(self)
@@ -838,9 +831,7 @@ class PgStorage(StorageBackend):
                     except Exception:
                         if first_invalid is None:
                             first_invalid = record.sequence
-                        issues.append(
-                            f"Ed25519 signature data error at sequence {record.sequence}"
-                        )
+                        issues.append(f"Ed25519 signature data error at sequence {record.sequence}")
 
                 prev_hash = record.record_hash
 
@@ -888,7 +879,8 @@ class PgStorage(StorageBackend):
             for cp in checkpoints:
                 hashes = await conn.fetch(
                     "SELECT record_hash FROM witness_records WHERE sequence >= $1 AND sequence <= $2 ORDER BY sequence",
-                    cp["from_sequence"], cp["to_sequence"],
+                    cp["from_sequence"],
+                    cp["to_sequence"],
                 )
                 record_hashes = [r["record_hash"] for r in hashes]
 
@@ -941,20 +933,21 @@ class PgStorage(StorageBackend):
                 )
 
             # Time range
-            row = await conn.fetchrow(
-                "SELECT MIN(timestamp), MAX(timestamp) FROM witness_records"
-            )
+            row = await conn.fetchrow("SELECT MIN(timestamp), MAX(timestamp) FROM witness_records")
             first_time = row["min"] if row and row["min"] else None
             last_time = row["max"] if row and row["max"] else None
 
             # Unique counts
-            unique_sessions = await conn.fetchval(
-                "SELECT COUNT(DISTINCT session_id) FROM witness_records WHERE session_id != ''"
-            ) or 0
+            unique_sessions = (
+                await conn.fetchval(
+                    "SELECT COUNT(DISTINCT session_id) FROM witness_records WHERE session_id != ''"
+                )
+                or 0
+            )
 
-            unique_actors = await conn.fetchval(
-                "SELECT COUNT(DISTINCT actor_id) FROM witness_records"
-            ) or 0
+            unique_actors = (
+                await conn.fetchval("SELECT COUNT(DISTINCT actor_id) FROM witness_records") or 0
+            )
 
             # By action type
             rows = await conn.fetch(
@@ -969,9 +962,12 @@ class PgStorage(StorageBackend):
             by_sensitivity: dict[str, int] = {r["sensitivity"]: r["cnt"] for r in rows}
 
             # Attested
-            attested = await conn.fetchval(
-                "SELECT COUNT(*) FROM witness_records WHERE tsa_receipt IS NOT NULL"
-            ) or 0
+            attested = (
+                await conn.fetchval(
+                    "SELECT COUNT(*) FROM witness_records WHERE tsa_receipt IS NOT NULL"
+                )
+                or 0
+            )
 
             # Chain validity (quick check - just verify last 10)
             verification = await self.verify_chain()
@@ -1025,12 +1021,10 @@ class PgStorage(StorageBackend):
     async def cleanup_expired(self) -> int:
         """Delete records past their retention period."""
         async with self._pool.acquire() as conn:
-            result = await conn.execute(
-                """
+            result = await conn.execute("""
                 DELETE FROM witness_records
                 WHERE (created_at + (retention_days || ' days')::INTERVAL) < NOW()
-                """
-            )
+                """)
             parts = result.split()
             return int(parts[1]) if len(parts) == 2 else 0
 
@@ -1049,7 +1043,8 @@ class PgStorage(StorageBackend):
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT record_hash FROM witness_records WHERE sequence >= $1 AND sequence <= $2 ORDER BY sequence",
-                from_seq, to_seq,
+                from_seq,
+                to_seq,
             )
             record_hashes = [r["record_hash"] for r in rows]
 
@@ -1118,7 +1113,8 @@ class PgStorage(StorageBackend):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM witness_checkpoints WHERE from_sequence <= $1 AND to_sequence >= $2",
-                sequence, sequence,
+                sequence,
+                sequence,
             )
             if not row:
                 return None
@@ -1164,7 +1160,8 @@ class PgStorage(StorageBackend):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM witness_checkpoints WHERE from_sequence <= $1 AND to_sequence >= $2",
-                sequence, sequence,
+                sequence,
+                sequence,
             )
 
             if not row:
@@ -1215,14 +1212,19 @@ class PgStorage(StorageBackend):
             if max_seq is None:
                 return 0
 
-            last_checkpointed = await conn.fetchval(
-                "SELECT COALESCE(MAX(to_sequence), -1) FROM witness_checkpoints"
-            ) or -1
+            last_checkpointed = (
+                await conn.fetchval(
+                    "SELECT COALESCE(MAX(to_sequence), -1) FROM witness_checkpoints"
+                )
+                or -1
+            )
 
         checkpoints_created = 0
 
         for checkpoint_end in range(
-            ((last_checkpointed // CHECKPOINT_INTERVAL) + 1) * CHECKPOINT_INTERVAL + CHECKPOINT_INTERVAL - 1,
+            ((last_checkpointed // CHECKPOINT_INTERVAL) + 1) * CHECKPOINT_INTERVAL
+            + CHECKPOINT_INTERVAL
+            - 1,
             max_seq + 1,
             CHECKPOINT_INTERVAL,
         ):
@@ -1334,12 +1336,14 @@ class PgStorage(StorageBackend):
                     anchor.id,
                 )
 
-                results.append({
-                    "type": anchor.anchor_type,
-                    "receipt_id": anchor.receipt_id,
-                    "verification_url": anchor.verification_url,
-                    "valid": is_valid,
-                })
+                results.append(
+                    {
+                        "type": anchor.anchor_type,
+                        "receipt_id": anchor.receipt_id,
+                        "verification_url": anchor.verification_url,
+                        "valid": is_valid,
+                    }
+                )
 
         return {
             "checkpoint_id": checkpoint_id,
@@ -1429,7 +1433,11 @@ class PgStorage(StorageBackend):
                        (bucket_id, tokens, max_tokens, refill_rate, last_refill)
                        VALUES ($1, $2, $3, $4, $5)
                        ON CONFLICT (bucket_id) DO NOTHING""",
-                    bucket_id, max_tokens, max_tokens, refill_rate, now,
+                    bucket_id,
+                    max_tokens,
+                    max_tokens,
+                    refill_rate,
+                    now,
                 )
 
                 row = await conn.fetchrow(
@@ -1450,13 +1458,17 @@ class PgStorage(StorageBackend):
                     new_tokens -= 1.0
                     await conn.execute(
                         "UPDATE witness_rate_limits SET tokens = $1, last_refill = $2 WHERE bucket_id = $3",
-                        new_tokens, now, bucket_id,
+                        new_tokens,
+                        now,
+                        bucket_id,
                     )
                     return True
                 else:
                     await conn.execute(
                         "UPDATE witness_rate_limits SET tokens = $1, last_refill = $2 WHERE bucket_id = $3",
-                        new_tokens, now, bucket_id,
+                        new_tokens,
+                        now,
+                        bucket_id,
                     )
                     return False
 
@@ -1496,7 +1508,9 @@ class PgStorage(StorageBackend):
                    (nonce_hash, created_at, ttl_seconds)
                    VALUES ($1, $2, $3)
                    ON CONFLICT (nonce_hash) DO NOTHING""",
-                nonce_hash, now, ttl_seconds,
+                nonce_hash,
+                now,
+                ttl_seconds,
             )
 
         # asyncpg returns "INSERT 0 1" for success, "INSERT 0 0" for no-op
@@ -1550,9 +1564,7 @@ class PgStorage(StorageBackend):
                 total_anchors += row["count"]
                 total_cost += float(row["total_cost"])
 
-            checkpoint_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM witness_checkpoints"
-            ) or 0
+            checkpoint_count = await conn.fetchval("SELECT COUNT(*) FROM witness_checkpoints") or 0
 
         return {
             "total_checkpoints": checkpoint_count,

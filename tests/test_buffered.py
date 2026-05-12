@@ -1,4 +1,5 @@
 """Tests for the BufferedStorage wrapper."""
+
 import asyncio
 import tempfile
 from pathlib import Path
@@ -13,6 +14,7 @@ from mcp_witness.storage_base import StorageBackend
 # Import BufferedStorage — may fail if asyncpg not installed
 try:
     from mcp_witness.buffered import BufferedStorage
+
     BUFFERED_AVAILABLE = True
 except ImportError:
     BUFFERED_AVAILABLE = False

@@ -1,6 +1,5 @@
 """Tests for storage module."""
 
-
 import pytest
 
 from mcp_witness.hasher import GENESIS_HASH
@@ -52,7 +51,9 @@ class TestWitnessStorage:
         assert record3.prev_hash == record2.record_hash
 
     @pytest.mark.asyncio
-    async def test_record_with_all_fields(self, temp_storage, sample_input_data, sample_output_data, sample_context):
+    async def test_record_with_all_fields(
+        self, temp_storage, sample_input_data, sample_output_data, sample_context
+    ):
         record = await temp_storage.record(
             action_type=ActionType.TOOL_CALL,
             actor_type=ActorType.AGENT,
@@ -208,8 +209,7 @@ class TestChainVerification:
 
         # Tamper: directly modify record_hash in the database at sequence 2
         await temp_storage._db.execute(
-            "UPDATE witness_records SET record_hash = ? WHERE sequence = ?",
-            ("deadbeef" * 8, 2)
+            "UPDATE witness_records SET record_hash = ? WHERE sequence = ?", ("deadbeef" * 8, 2)
         )
         await temp_storage._db.commit()
 
@@ -230,8 +230,7 @@ class TestChainVerification:
 
         # Tamper: break the prev_hash link at sequence 3
         await temp_storage._db.execute(
-            "UPDATE witness_records SET prev_hash = ? WHERE sequence = ?",
-            ("deadbeef" * 8, 3)
+            "UPDATE witness_records SET prev_hash = ? WHERE sequence = ?", ("deadbeef" * 8, 3)
         )
         await temp_storage._db.commit()
 
@@ -258,8 +257,7 @@ class TestChainVerification:
 
         # Tamper: modify the input_hash field (record_hash depends on it)
         await temp_storage._db.execute(
-            "UPDATE witness_records SET input_hash = ? WHERE sequence = ?",
-            ("deadbeef" * 8, 0)
+            "UPDATE witness_records SET input_hash = ? WHERE sequence = ?", ("deadbeef" * 8, 0)
         )
         await temp_storage._db.commit()
 
@@ -278,8 +276,7 @@ class TestChainVerification:
 
         # Tamper at sequence 5
         await temp_storage._db.execute(
-            "UPDATE witness_records SET record_hash = ? WHERE sequence = ?",
-            ("deadbeef" * 8, 5)
+            "UPDATE witness_records SET record_hash = ? WHERE sequence = ?", ("deadbeef" * 8, 5)
         )
         await temp_storage._db.commit()
 
@@ -394,13 +391,15 @@ class TestBatchRecord:
     @pytest.mark.asyncio
     async def test_batch_single_record(self, temp_storage):
         """Batch insert with single record works correctly."""
-        results = await temp_storage.batch_record([
-            {
-                "action_type": ActionType.DECISION,
-                "actor_id": "batch_actor",
-                "session_id": "batch_sess",
-            }
-        ])
+        results = await temp_storage.batch_record(
+            [
+                {
+                    "action_type": ActionType.DECISION,
+                    "actor_id": "batch_actor",
+                    "session_id": "batch_sess",
+                }
+            ]
+        )
 
         assert len(results) == 1
         assert results[0].sequence == 0
@@ -413,11 +412,13 @@ class TestBatchRecord:
     @pytest.mark.asyncio
     async def test_batch_multiple_records(self, temp_storage):
         """Batch insert with multiple records maintains hash chain."""
-        results = await temp_storage.batch_record([
-            {"action_type": ActionType.TOOL_CALL, "tool_name": "tool_a"},
-            {"action_type": ActionType.DECISION, "reasoning": "step 2"},
-            {"action_type": ActionType.OUTPUT, "session_id": "s3"},
-        ])
+        results = await temp_storage.batch_record(
+            [
+                {"action_type": ActionType.TOOL_CALL, "tool_name": "tool_a"},
+                {"action_type": ActionType.DECISION, "reasoning": "step 2"},
+                {"action_type": ActionType.OUTPUT, "session_id": "s3"},
+            ]
+        )
 
         assert len(results) == 3
         assert results[0].sequence == 0
@@ -473,18 +474,20 @@ class TestBatchRecord:
             session_id="equiv",
         )
 
-        results = await temp_storage.batch_record([
-            {
-                "action_type": ActionType.TOOL_CALL,
-                "tool_name": "batch_tool",
-                "session_id": "equiv",
-            },
-            {
-                "action_type": ActionType.DECISION,
-                "reasoning": "batch_reasoning",
-                "session_id": "equiv",
-            },
-        ])
+        results = await temp_storage.batch_record(
+            [
+                {
+                    "action_type": ActionType.TOOL_CALL,
+                    "tool_name": "batch_tool",
+                    "session_id": "equiv",
+                },
+                {
+                    "action_type": ActionType.DECISION,
+                    "reasoning": "batch_reasoning",
+                    "session_id": "equiv",
+                },
+            ]
+        )
 
         assert len(results) == 2
         assert results[0].sequence == 1
@@ -499,18 +502,20 @@ class TestBatchRecord:
     @pytest.mark.asyncio
     async def test_batch_with_all_fields(self, temp_storage, sample_input_data, sample_output_data):
         """Batch insert with full record data."""
-        results = await temp_storage.batch_record([
-            {
-                "action_type": ActionType.TOOL_CALL,
-                "actor_id": "batch_actor",
-                "session_id": "full_batch",
-                "tool_name": "full_tool",
-                "input_data": sample_input_data,
-                "output_data": sample_output_data,
-                "reasoning": "full reasoning",
-                "confidence": 0.95,
-            }
-        ])
+        results = await temp_storage.batch_record(
+            [
+                {
+                    "action_type": ActionType.TOOL_CALL,
+                    "actor_id": "batch_actor",
+                    "session_id": "full_batch",
+                    "tool_name": "full_tool",
+                    "input_data": sample_input_data,
+                    "output_data": sample_output_data,
+                    "reasoning": "full reasoning",
+                    "confidence": 0.95,
+                }
+            ]
+        )
 
         assert len(results) == 1
         r = results[0]
@@ -657,6 +662,7 @@ class TestIdempotency:
         assert await temp_storage.check_and_record_nonce(nonce, ttl_seconds=3600) is True
         # Cleanup shouldn't remove this
         from mcp_witness.storage import SqliteStorage
+
         if isinstance(temp_storage, SqliteStorage):
             await temp_storage._cleanup_expired_nonces()
         assert await temp_storage.check_and_record_nonce(nonce) is False  # Still duplicate
@@ -690,20 +696,24 @@ class TestEd25519StorageSigning:
     """Tests for Ed25519 signing in storage operations."""
 
     @pytest.mark.asyncio
-    async def test_record_no_signing_when_key_unset(self, temp_storage):
-        """Records created without MCP_WITNESS_SIGNING_KEY have no signature."""
+    async def test_record_signing_with_auto_generated_key(self, temp_storage):
+        """Records are signed with auto-generated ephemeral key when env var unset."""
         record = await temp_storage.record(
             action_type=ActionType.TOOL_CALL,
-            tool_name="unsigned_tool",
+            tool_name="signed_tool",
         )
-        assert record.signature is None
-        assert record.signer_public_key is None
+        # Auto-generated key means signatures are always present
+        assert record.signature is not None
+        assert len(record.signature) == 128  # 64 bytes hex
+        assert record.signer_public_key is not None
+        assert len(record.signer_public_key) == 64  # 32 bytes hex
 
     @pytest.mark.asyncio
-    async def test_signer_public_key_none_when_disabled(self, temp_storage):
-        """get_signer_public_key returns None when signing is disabled."""
+    async def test_signer_public_key_with_auto_generated_key(self, temp_storage):
+        """get_signer_public_key returns the auto-generated public key."""
         pk = await temp_storage.get_signer_public_key()
-        assert pk is None
+        assert pk is not None
+        assert len(pk) == 64  # 32 bytes hex
 
     @pytest.mark.asyncio
     async def test_verify_chain_with_unsigned_records(self, temp_storage):
@@ -744,14 +754,17 @@ class TestEd25519StorageSigning:
         import importlib
 
         import mcp_witness.security as sec
+
         importlib.reload(sec)
 
         # Need a fresh storage to pick up the key
         import tempfile
         from pathlib import Path
+
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "signed.db"
             from mcp_witness.storage import SqliteStorage
+
             store = SqliteStorage(str(db_path))
             await store.connect()
 
@@ -788,13 +801,16 @@ class TestEd25519StorageSigning:
         import importlib
 
         import mcp_witness.security as sec
+
         importlib.reload(sec)
 
         import tempfile
         from pathlib import Path
+
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "tampered.db"
             from mcp_witness.storage import SqliteStorage
+
             store = SqliteStorage(str(db_path))
             await store.connect()
 
@@ -833,13 +849,16 @@ class TestEd25519StorageSigning:
         import importlib
 
         import mcp_witness.security as sec
+
         importlib.reload(sec)
 
         import tempfile
         from pathlib import Path
+
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "pk_test.db"
             from mcp_witness.storage import SqliteStorage
+
             store = SqliteStorage(str(db_path))
             await store.connect()
 
@@ -849,10 +868,15 @@ class TestEd25519StorageSigning:
 
             # The public key is derived from the seed, not the seed itself
             from cryptography.hazmat.primitives import serialization
-            expected_pk = private_key.public_key().public_bytes(
-                encoding=serialization.Encoding.Raw,
-                format=serialization.PublicFormat.Raw,
-            ).hex()
+
+            expected_pk = (
+                private_key.public_key()
+                .public_bytes(
+                    encoding=serialization.Encoding.Raw,
+                    format=serialization.PublicFormat.Raw,
+                )
+                .hex()
+            )
             assert pk == expected_pk
 
             await store.close()
@@ -860,12 +884,16 @@ class TestEd25519StorageSigning:
         importlib.reload(sec)  # Restore original state
 
     @pytest.mark.asyncio
-    async def test_batch_records_no_signing_when_key_unset(self, temp_storage):
-        """Batch records have no signature when signing is disabled."""
-        records = await temp_storage.batch_record([
-            {"action_type": ActionType.TOOL_CALL, "tool_name": "a"},
-            {"action_type": ActionType.DECISION, "reasoning": "b"},
-        ])
+    async def test_batch_records_signing_with_auto_generated_key(self, temp_storage):
+        """Batch records are signed with auto-generated key."""
+        records = await temp_storage.batch_record(
+            [
+                {"action_type": ActionType.TOOL_CALL, "tool_name": "a"},
+                {"action_type": ActionType.DECISION, "reasoning": "b"},
+            ]
+        )
         for r in records:
-            assert r.signature is None
-            assert r.signer_public_key is None
+            assert r.signature is not None
+            assert len(r.signature) == 128
+            assert r.signer_public_key is not None
+            assert len(r.signer_public_key) == 64
