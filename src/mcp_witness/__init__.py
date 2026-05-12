@@ -32,7 +32,23 @@ from .models import (
 )
 from .storage import SqliteStorage, WitnessStorage  # WitnessStorage is alias for SqliteStorage
 from .storage_base import StorageBackend
-from .storage_pg import PgStorage
+
+# PgStorage is loaded lazily — requires asyncpg (optional postgres extra)
+PgStorage = None  # type: ignore[assignment]
+
+
+def _load_pg_storage():
+    """Lazy-load PgStorage so asyncpg is only imported when needed."""
+    global PgStorage
+    if PgStorage is None:
+        try:
+            from .storage_pg import PgStorage as _Pg
+
+            PgStorage = _Pg
+        except ImportError:
+            pass
+    return PgStorage
+
 
 __all__ = [
     # Version

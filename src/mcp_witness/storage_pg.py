@@ -243,7 +243,21 @@ class PgStorage(StorageBackend):
                     ttl_seconds INTEGER NOT NULL DEFAULT 3600
                 );
                 CREATE INDEX IF NOT EXISTS idx_pg_nonces_created ON witness_idempotency_nonces(created_at);
+
+                -- Schema version tracking for safe migrations
+                CREATE TABLE IF NOT EXISTS witness_schema_version (
+                    version INTEGER NOT NULL,
+                    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
             """)
+
+            # Initialize schema version if not set
+            version_count = await conn.fetchval("SELECT COUNT(*) FROM witness_schema_version")
+            if version_count == 0:
+                await conn.execute(
+                    "INSERT INTO witness_schema_version (version) VALUES ($1)",
+                    1,
+                )
 
     # =========================================================================
     # Internal Helpers
