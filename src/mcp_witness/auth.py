@@ -2,16 +2,21 @@
 Authentication and authorization module for mcp-witness.
 
 Provides:
+- JWT assertion authentication (Ed25519-signed)
 - API key-based authentication (MCP_WITNESS_API_KEY env var)
 - Three-role RBAC: admin, auditor, writer
 - Tool-level permission scoping
 - Backward compatibility with deprecated READ_ONLY_MODE
 """
 
+import json
 import logging
 import os
+import time
 from enum import Enum
 from typing import Optional
+
+from cryptography.hazmat.primitives.asymmetric import ed25519
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +68,91 @@ ROLE_PERMISSIONS: dict[AuthRole, frozenset[str]] = {
 
 
 # ---------------------------------------------------------------------------
+# JWT Configuration
+# ---------------------------------------------------------------------------
+
+MCP_WITNESS_JWT_PUBLIC_KEY = os.getenv("MCP_WITNESS_JWT_PUBLIC_KEY", "")
+# Format: hex-encoded Ed25519 public key (64 hex chars = 32 bytes)
+
+MCP_WITNESS_JWT_MAX_AGE = int(os.getenv("MCP_WITNESS_JWT_MAX_AGE", "3600"))
+# Maximum token age in seconds (default: 1 hour)
+
+
+def verify_jwt_assertion(token: str) -> Optional[dict]:
+    """
+    Verify an Ed25519-signed JWT assertion token.
+
+    Token format: base64(header).base64(payload).base64(signature)
+    - header: {"alg":"EdDSA","typ":"JWT"}
+    - payload: {"sub":"<client_id>","iat":<issued_at>,"exp":<expiry>,"role":"auditor"|"writer"|"reader"}
+    - signature: Ed25519 signature of header.payload
+
+    Returns the payload dict if valid (with sub, role, iat, exp), None otherwise.
+    """
+    if not MCP_WITNESS_JWT_PUBLIC_KEY:
+        return None  # JWT auth not configured
+
+    try:
+        pubkey_bytes = bytes.fromhex(MCP_WITNESS_JWT_PUBLIC_KEY)
+        if len(pubkey_bytes) != 32:
+            logger.error("Invalid JWT public key length")
+            return None
+
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+
+        header_b64, payload_b64, sig_b64 = parts
+
+        # Decode and verify
+        import base64
+
+        def b64url_decode(s: str) -> bytes:
+            s = s.replace("-", "+").replace("_", "/")
+            padding = 4 - len(s) % 4
+            if padding != 4:
+                s += "=" * padding
+            return base64.b64decode(s)
+
+        payload_bytes = b64url_decode(payload_b64)
+        sig_bytes = b64url_decode(sig_b64)
+
+        # Verify Ed25519 signature
+        try:
+            pubkey = ed25519.Ed25519PublicKey.from_public_bytes(pubkey_bytes)
+            message = f"{header_b64}.{payload_b64}".encode()
+            pubkey.verify(sig_bytes, message)
+        except Exception:
+            return None  # Invalid signature
+
+        # Parse payload
+        payload = json.loads(payload_bytes)
+
+        # Check expiry
+        now = int(time.time())
+        if payload.get("exp", 0) < now:
+            logger.warning("JWT token expired at %d, now is %d", payload["exp"], now)
+            return None
+
+        # Check not-before (optional)
+        if payload.get("nbf", 0) > now:
+            logger.warning("JWT token not yet valid (nbf=%d)", payload["nbf"])
+            return None
+
+        # Check max age
+        iat = payload.get("iat", 0)
+        if now - iat > MCP_WITNESS_JWT_MAX_AGE:
+            logger.warning("JWT token exceeds max age (%ds)", MCP_WITNESS_JWT_MAX_AGE)
+            return None
+
+        return payload
+
+    except Exception as e:
+        logger.warning("JWT verification failed: %s", e)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Key Management
 # ---------------------------------------------------------------------------
 
@@ -105,19 +195,52 @@ def load_api_keys() -> dict[str, AuthRole]:
     return keys
 
 
-def authenticate() -> Optional[AuthRole]:
-    """Authenticate the current request from environment variables.
+def _lookup_api_key(token: str) -> Optional[AuthRole]:
+    """Check if a token matches a configured API key. Returns role or None."""
+    if not token:
+        return None
+    api_keys = load_api_keys()
+    return api_keys.get(token)
 
-    Flow:
-    1. If MCP_WITNESS_API_KEYS is not set → open mode (returns None == admin)
-    2. If set, check MCP_WITNESS_API_KEY against loaded keys
-    3. Anonymous (no key) defaults to auditor unless ALLOW_ANON_WRITES=true
 
-    Handles deprecated MCP_WITNESS_READ_ONLY with a warning.
+def authenticate(token: Optional[str] = None) -> Optional[AuthRole]:
+    """Authenticate the current request.
+
+    Supports:
+    1. JWT assertions (Ed25519-signed) — checked first
+    2. API key tokens (shared secret) — fallback
+    3. Environment variable MCP_WITNESS_API_KEY — legacy
+    4. Open mode (no keys configured) — full admin access
+
+    Args:
+        token: Authentication token (JWT or API key).
+               If None, reads from MCP_WITNESS_API_KEY env var.
 
     Returns:
-        AuthRole if authenticated, None for open mode (full access).
+        AuthRole if authenticated, None for open mode (full admin access).
     """
+    # Resolve token from argument or environment
+    if token is None:
+        token = os.getenv("MCP_WITNESS_API_KEY", "").strip()
+
+    # 1. Try JWT assertion first
+    if token:
+        jwt_payload = verify_jwt_assertion(token)
+        if jwt_payload is not None:
+            role_str = jwt_payload.get("role", "writer")
+            try:
+                return AuthRole(role_str)
+            except ValueError:
+                logger.warning("JWT has unknown role: %s", role_str)
+                return AuthRole.AUDITOR
+
+    # 2. Fall back to API key
+    if token:
+        role = _lookup_api_key(token)
+        if role is not None:
+            return role
+
+    # 3. Handle no-key / open mode / anonymous
     api_keys = load_api_keys()
 
     # Deprecated READ_ONLY_MODE handling
@@ -133,11 +256,6 @@ def authenticate() -> Optional[AuthRole]:
         if read_only:
             return AuthRole.AUDITOR
         return None  # Full admin access
-
-    # API keys are configured — authenticate
-    provided_key = os.getenv("MCP_WITNESS_API_KEY", "").strip()
-    if provided_key and provided_key in api_keys:
-        return api_keys[provided_key]
 
     # Anonymous / invalid key
     allow_anon_writes = os.getenv("MCP_WITNESS_ALLOW_ANON_WRITES", "false").lower() == "true"

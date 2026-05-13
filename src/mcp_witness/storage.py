@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import re
-import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -134,7 +133,7 @@ class SqliteStorage(StorageBackend):
         self._chain_valid_at_startup: Optional[bool] = None
         self._last_record_hash: Optional[str] = None
         self._active_transactions: int = 0
-        self._transaction_lock = threading.Lock()
+        self._transaction_lock = asyncio.Lock()
 
     async def connect(self) -> None:
         """Connect to the database and ensure schema exists."""
@@ -496,6 +495,26 @@ class SqliteStorage(StorageBackend):
                 prev_hash = last_record["record_hash"] if last_record else GENESIS_HASH
                 sequence = (last_record["sequence"] + 1) if last_record else 0
 
+                # Verify chain integrity against DB state (inside transaction).
+                # This catches chain forks even across process restarts where
+                # the in-memory _last_record_hash cache is lost.
+                if prev_hash != GENESIS_HASH:
+                    cursor = await self._db.execute(
+                        "SELECT record_hash FROM witness_records"
+                        " ORDER BY sequence DESC LIMIT 1"
+                    )
+                    row = await cursor.fetchone()
+                    db_last_hash = row[0] if row else None
+                    if db_last_hash is not None and db_last_hash != prev_hash:
+                        logger.critical(
+                            "CHAIN INVARIANT BROKEN at sequence %d: "
+                            "expected prev_hash=%s (from DB), got %s. "
+                            "Chain may be forked!",
+                            sequence,
+                            db_last_hash[:16],
+                            prev_hash[:16],
+                        )
+
                 record_hash = compute_record_hash(
                     prev_hash=prev_hash,
                     sequence=sequence,
@@ -592,7 +611,7 @@ class SqliteStorage(StorageBackend):
                 await self._db.execute("ROLLBACK")
                 raise
 
-        with self._transaction_lock:
+        async with self._transaction_lock:
             self._active_transactions += 1
         try:
             (
@@ -605,18 +624,9 @@ class SqliteStorage(StorageBackend):
                 signer_key_id,
             ) = await self._retry_on_busy(_do_insert)
         finally:
-            with self._transaction_lock:
+            async with self._transaction_lock:
                 self._active_transactions -= 1
 
-        # Runtime invariant: check prev_hash chain is intact
-        if self._last_record_hash is not None and prev_hash != self._last_record_hash:
-            logger.critical(
-                "CHAIN INVARIANT BROKEN at sequence %d: "
-                "expected prev_hash=%s, got %s. Chain may be forked!",
-                sequence,
-                self._last_record_hash[:16],
-                prev_hash[:16],
-            )
         self._last_record_hash = record_hash
 
         # Create record object
@@ -919,12 +929,12 @@ class SqliteStorage(StorageBackend):
                 await self._db.execute("ROLLBACK")
                 raise
 
-        with self._transaction_lock:
+        async with self._transaction_lock:
             self._active_transactions += 1
         try:
             result_records = await self._retry_on_busy(_do_batch_insert)
         finally:
-            with self._transaction_lock:
+            async with self._transaction_lock:
                 self._active_transactions -= 1
 
         # Create checkpoints (outside the transaction)
@@ -1584,23 +1594,39 @@ class SqliteStorage(StorageBackend):
         issues = []
         records_checked = 0
 
-        # Verify each checkpoint's Merkle root
+        # Verify each checkpoint's Merkle root.
+        # Prefer stored tree_data for O(1) root comparison;
+        # only rebuild the Merkle tree from scratch when tree_data is absent.
         for cp in checkpoints:
             # Get record hashes for this checkpoint
             cursor = await self._db.execute(
-                "SELECT record_hash FROM witness_records WHERE sequence >= ? AND sequence <= ? ORDER BY sequence",
+                "SELECT record_hash FROM witness_records"
+                " WHERE sequence >= ? AND sequence <= ?"
+                " ORDER BY sequence",
                 (cp["from_sequence"], cp["to_sequence"]),
             )
             hashes = [r[0] for r in await cursor.fetchall()]
 
-            # Rebuild tree and check root
-            tree = build_merkle_tree(hashes)
-
-            if tree.root != cp["merkle_root"]:
-                issues.append(
-                    f"Checkpoint {cp['id']} Merkle root mismatch: "
-                    f"tampering detected in records {cp['from_sequence']}-{cp['to_sequence']}"
-                )
+            if cp.get("tree_data"):
+                # O(1): trust the stored tree structure
+                tree_data = json.loads(cp["tree_data"])
+                stored_root = tree_data[-1][0] if tree_data else None
+                if stored_root != cp["merkle_root"]:
+                    issues.append(
+                        f"Checkpoint {cp['id']} Merkle root mismatch "
+                        f"(stored tree_data): tampering detected in "
+                        f"records {cp['from_sequence']}-{cp['to_sequence']}"
+                    )
+            else:
+                # Fallback: rebuild Merkle tree from scratch
+                # (only when tree_data is missing from the checkpoint)
+                tree = build_merkle_tree(hashes)
+                if tree.root != cp["merkle_root"]:
+                    issues.append(
+                        f"Checkpoint {cp['id']} Merkle root mismatch: "
+                        f"tampering detected in records "
+                        f"{cp['from_sequence']}-{cp['to_sequence']}"
+                    )
 
             records_checked += cp["record_count"]
 

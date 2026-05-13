@@ -666,52 +666,85 @@ async def handle_stats(store: StorageBackend) -> dict:
 
 
 async def handle_attest(store: StorageBackend, args: dict) -> dict:
-    """Handle witness_attest tool call."""
-    # Note: Full RFC 3161 implementation would require additional libraries
-    # This is a simplified version that records attestation intent
+    """Handle witness_attest tool call — uses real RFC 3161 TSA when available."""
+    from .anchoring import AnchorService, TSAProvider, AnchorType
 
     record_id = args.get("record_id")
     batch = args.get("batch", True)
+
+    # Initialize anchor service (TSA only for attest tool)
+    anchor_service = AnchorService(providers=[TSAProvider()])
 
     if record_id:
         record = await store.get_by_id(record_id)
         if not record:
             return {"error": f"Record not found: {record_id}"}
 
-        # In production, this would call a TSA server
-        # For now, we mark it with a timestamp
-        anchor_time = datetime.now(timezone.utc).isoformat()
-        await store.update_attestation(
-            record_id=record_id,
-            tsa_receipt=f"ATTESTATION:{anchor_time}".encode(),
-            anchored_at=anchor_time,
-        )
+        try:
+            receipts = await anchor_service.anchor(
+                merkle_root=record.record_hash,
+                metadata={"record_id": str(record.id), "sequence": record.sequence},
+                anchor_types=[AnchorType.TSA],
+            )
+            receipt = receipts[0] if receipts else None
+        except Exception as e:
+            logger.warning("TSA attestation failed for record %s: %s", record_id, e)
+            return {
+                "success": False,
+                "error": f"TSA attestation failed: {e}",
+                "note": "Ensure TSA is reachable or disable strict mode with MCP_WITNESS_ANCHOR_STRICT=false",
+            }
 
-        return {
-            "success": True,
-            "records_attested": 1,
-            "anchor_time": anchor_time,
-            "note": "RFC 3161 TSA integration available in production deployment",
-        }
+        if receipt:
+            await store.update_attestation(
+                record_id=record_id,
+                tsa_receipt=receipt.raw_receipt,
+                anchored_at=receipt.timestamp.isoformat(),
+            )
+            return {
+                "success": True,
+                "records_attested": 1,
+                "anchor_time": receipt.timestamp.isoformat(),
+                "receipt_id": receipt.receipt_id,
+                "tsa_provider": "RFC 3161 TSA",
+            }
+
+        return {"error": "TSA returned no receipt"}
 
     if batch:
-        # Get unattested records
         records = await store.query(limit=1000)
         unattested = [r for r in records if r.tsa_receipt is None]
 
-        anchor_time = datetime.now(timezone.utc).isoformat()
+        if not unattested:
+            return {"success": True, "records_attested": 0, "note": "No unattested records"}
+
+        success_count = 0
+        errors = []
         for record in unattested:
-            await store.update_attestation(
-                record_id=record.id,
-                tsa_receipt=f"BATCH_ATTESTATION:{anchor_time}".encode(),
-                anchored_at=anchor_time,
-            )
+            try:
+                receipts = await anchor_service.anchor(
+                    merkle_root=record.record_hash,
+                    metadata={"record_id": str(record.id), "sequence": record.sequence},
+                    anchor_types=[AnchorType.TSA],
+                )
+                receipt = receipts[0] if receipts else None
+                if receipt:
+                    await store.update_attestation(
+                        record_id=str(record.id),
+                        tsa_receipt=receipt.raw_receipt,
+                        anchored_at=receipt.timestamp.isoformat(),
+                    )
+                    success_count += 1
+                else:
+                    errors.append(f"Record {record.id}: TSA returned no receipt")
+            except Exception as e:
+                errors.append(f"Record {record.id}: {e}")
 
         return {
             "success": True,
-            "records_attested": len(unattested),
-            "anchor_time": anchor_time,
-            "note": "RFC 3161 TSA integration available in production deployment",
+            "records_attested": success_count,
+            "errors": errors[:10] if errors else None,  # Limit error list
+            "note": f"Attested {success_count}/{len(unattested)} records via RFC 3161 TSA",
         }
 
     return {"error": "Specify record_id or set batch=true"}
@@ -833,7 +866,7 @@ async def handle_export(store: StorageBackend, args: dict) -> dict:
 
 async def handle_checkpoints(store: StorageBackend, args: dict) -> dict:
     """Handle witness_checkpoints tool call."""
-    limit = args.get("limit", 20)
+    limit = min(args.get("limit", 20), MAX_QUERY_LIMIT)
     checkpoints = await store.list_checkpoints(limit=limit)
 
     return {

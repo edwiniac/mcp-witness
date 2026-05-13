@@ -514,6 +514,85 @@ def cmd_migrations(args):
     asyncio.run(_list())
 
 
+def cmd_jwt_sign(args=None):
+    """Generate a signed JWT assertion token for mcp-witness authentication."""
+    import argparse
+    import base64
+    import json
+    import time
+
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    parser = argparse.ArgumentParser(
+        prog="mcp-witness jwt-sign",
+        description="Generate JWT assertion for mcp-witness",
+    )
+    parser.add_argument(
+        "--private-key",
+        required=True,
+        help="Hex-encoded Ed25519 private key (64 hex chars = 32 bytes)",
+    )
+    parser.add_argument(
+        "--sub",
+        required=True,
+        help="Client ID / subject to embed in the token",
+    )
+    parser.add_argument(
+        "--role",
+        default="writer",
+        choices=["reader", "writer", "auditor"],
+        help="Role for the JWT (default: writer)",
+    )
+    parser.add_argument(
+        "--ttl",
+        type=int,
+        default=3600,
+        help="Token TTL in seconds (default: 3600)",
+    )
+    parser.add_argument(
+        "--public-key",
+        action="store_true",
+        help="Output the corresponding public key (set as MCP_WITNESS_JWT_PUBLIC_KEY)",
+    )
+
+    parsed = parser.parse_args(args)
+
+    privkey_bytes = bytes.fromhex(parsed.private_key)
+
+    # Generate public key if requested
+    if parsed.public_key:
+        privkey = ed25519.Ed25519PrivateKey.from_private_bytes(privkey_bytes)
+        pubkey = privkey.public_key()
+        pub_bytes = pubkey.public_bytes_raw()
+        print("Public key (set as MCP_WITNESS_JWT_PUBLIC_KEY):")
+        print(pub_bytes.hex())
+        return
+
+    # Build JWT
+    header = {"alg": "EdDSA", "typ": "JWT"}
+    now = int(time.time())
+    payload = {
+        "sub": parsed.sub,
+        "iat": now,
+        "exp": now + parsed.ttl,
+        "role": parsed.role,
+    }
+
+    def b64url_encode(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+    header_b64 = b64url_encode(json.dumps(header, separators=(",", ":")).encode())
+    payload_b64 = b64url_encode(json.dumps(payload, separators=(",", ":")).encode())
+    message = f"{header_b64}.{payload_b64}".encode()
+
+    privkey = ed25519.Ed25519PrivateKey.from_private_bytes(privkey_bytes)
+    signature = privkey.sign(message)
+    sig_b64 = b64url_encode(signature)
+
+    token = f"{header_b64}.{payload_b64}.{sig_b64}"
+    print(token)
+
+
 def cmd_sbom(args):
     """Generate SBOM (Software Bill of Materials)."""
     import subprocess
@@ -633,6 +712,9 @@ def main():
     # migrations
     sub.add_parser("migrations", help="List available/pending migrations")
 
+    # jwt-sign
+    sub.add_parser("jwt-sign", help="Generate JWT assertion token")
+
     # sbom
     sub.add_parser("sbom", help="Generate SBOM (Software Bill of Materials)")
 
@@ -659,6 +741,7 @@ def main():
         "migrate": cmd_migrate,
         "migrations": cmd_migrations,
         "sbom": cmd_sbom,
+        "jwt-sign": cmd_jwt_sign,
     }
 
     commands[args.command](args)
