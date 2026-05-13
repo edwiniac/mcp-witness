@@ -42,6 +42,26 @@ AI agents make decisions. Regulators ask questions. mcp-witness provides **crypt
 | ASSURANCE-2 | Hash chain + Merkle trees, tamper-EVIDENT, configurable anchoring | **v0.6.0** |
 | ASSURANCE-3 | Non-repudiation (Ed25519), strict anchoring, encryption at rest, formal threat model | **Target: v1.0** |
 
+### ⚠️ Current Limitations (v0.6.0 → v1.0)
+
+**Anchoring is asynchronous.** Records are created first, then anchored later when a
+checkpoint triggers `AnchorService`. Between record creation and checkpoint anchoring,
+records exist without external trust proof. Use `witness_attest` to anchor individual
+records immediately.
+
+**Single-node storage.** SQLite (default) and PostgreSQL backends are single-instance.
+No built-in replication, clustering, or HA. Back up your database regularly.
+See [docs/backup.md](docs/backup.md).
+
+**Encryption at rest requires configuration.** Compliance presets reference AES-256-GCM
+but encryption is NOT active by default. Set `MCP_WITNESS_ENCRYPTION_KEY` to enable
+field-level envelope encryption. Without it, sensitive fields are stored as plaintext
+JSON.
+
+**Non-repudiation requires persistent keys.** Ed25519 signing is implemented but defaults
+to an ephemeral (per-process) key. Set `MCP_WITNESS_SIGNING_KEY` to a fixed 32-byte
+hex key for verifiable non-repudiation across sessions.
+
 See [SECURITY.md](SECURITY.md) for the full threat model.
 
 ## 🚀 30-Second Quickstart
