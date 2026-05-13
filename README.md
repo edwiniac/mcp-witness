@@ -22,7 +22,7 @@ AI agents make decisions. Regulators ask questions. mcp-witness provides **crypt
 |---------|-------------|-----------------|
 | Tamper detection | ✅ SHA-256 hash chain + Merkle trees | ❌ Text files, easy to edit |
 | O(log n) verification | ✅ Merkle checkpoints with auto-backfill | ❌ Linear scan only |
-| Non-repudiation | ✅ Ed25519 record signing | ❌ None |
+| Non-repudiation | ⚠️ Ed25519 record signing (requires persistent key) | ❌ None |
 | External anchoring | ✅ TSA, Bitcoin (OTS), IPFS | ❌ None |
 | Compliance presets | ✅ HIPAA, GDPR, SOX, PCI DSS, FedRAMP, SOC2 | ❌ Manual configuration |
 | PII/PHI redaction | ✅ Cryptographic hashing | ❌ Plaintext or manual |

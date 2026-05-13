@@ -279,12 +279,18 @@ def get_signing_key() -> Optional[object]:
             )
         _signing_key = ed25519.Ed25519PrivateKey.from_private_bytes(seed)
     else:
-        # Auto-generate a random keypair for the process lifetime
+        # Auto-generate a random keypair for the process lifetime.
+        # WARNING: This means EVERY PROCESS RESTART uses a DIFFERENT key.
+        # Records signed in one session CANNOT be verified in another.
+        # No persistent identity = NO NON-REPUDIATION.
+        # Set MCP_WITNESS_SIGNING_KEY for deterministic signing.
         _signing_key = ed25519.Ed25519PrivateKey.generate()
-        logger.info(
-            "MCP_WITNESS_SIGNING_KEY not set — auto-generated ephemeral keypair. "
-            "Records created this session will be signed with a random key. "
-            "For deterministic signing, set MCP_WITNESS_SIGNING_KEY."
+        logger.warning(
+            "MCP_WITNESS_SIGNING_KEY not set — using EPHEMERAL keypair. "
+            "Non-repudiation is NOT provided. Records signed this session "
+            "cannot be verified after restart. "
+            "Set MCP_WITNESS_SIGNING_KEY to a persistent 32-byte hex key "
+            "for deterministic signing with non-repudiation."
         )
 
     # Extract public key bytes
