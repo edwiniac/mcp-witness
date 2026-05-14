@@ -57,6 +57,16 @@ MCP_WITNESS_PG_URL = os.getenv("MCP_WITNESS_PG_URL", "")
 # Graceful shutdown timeout (seconds to wait for in-flight writes)
 SHUTDOWN_TIMEOUT = int(os.getenv("MCP_WITNESS_SHUTDOWN_TIMEOUT", "30"))
 
+# Prometheus metrics port (0 = disabled); empty string treated as 0
+_raw_metrics_port = os.getenv("MCP_WITNESS_METRICS_PORT", "0").strip()
+METRICS_PORT = int(_raw_metrics_port) if _raw_metrics_port.isdigit() else 0
+
+# Prometheus metrics host (default: loopback only — do not expose to the network)
+METRICS_HOST = os.getenv("MCP_WITNESS_METRICS_HOST", "127.0.0.1")
+
+# When true, refuse to start without a persistent MCP_WITNESS_SIGNING_KEY
+REQUIRE_PERSISTENT_KEY = os.getenv("MCP_WITNESS_REQUIRE_PERSISTENT_KEY", "false").lower() == "true"
+
 # Shutdown state
 _shutting_down = False
 
@@ -667,7 +677,7 @@ async def handle_stats(store: StorageBackend) -> dict:
 
 async def handle_attest(store: StorageBackend, args: dict) -> dict:
     """Handle witness_attest tool call — uses real RFC 3161 TSA when available."""
-    from .anchoring import AnchorService, TSAProvider, AnchorType
+    from .anchoring import AnchorService, AnchorType, TSAProvider
 
     record_id = args.get("record_id")
     batch = args.get("batch", True)
@@ -1244,6 +1254,15 @@ async def main():
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(_handle_shutdown(s)))
 
+    # Enforce persistent signing key before touching the database.
+    # Checked here (before connect) so no cleanup is needed on failure.
+    if REQUIRE_PERSISTENT_KEY and not os.getenv("MCP_WITNESS_SIGNING_KEY", "").strip():
+        raise RuntimeError(
+            "MCP_WITNESS_REQUIRE_PERSISTENT_KEY=true but MCP_WITNESS_SIGNING_KEY is not set. "
+            "Non-repudiation requires a persistent 32-byte hex seed. "
+            "Generate one with: openssl rand -hex 32"
+        )
+
     await storage.connect()
 
     # Warn on startup chain verification failure (degraded operation)
@@ -1255,10 +1274,20 @@ async def main():
             "Run witness_verify to diagnose."
         )
 
+    # Start Prometheus metrics endpoint if configured
+    metrics_server = None
+    if METRICS_PORT:
+        from .metrics_server import start_metrics_server
+
+        metrics_server = await start_metrics_server(host=METRICS_HOST, port=METRICS_PORT)
+
     try:
         async with stdio_server() as (read_stream, write_stream):
             await server.run(read_stream, write_stream, server.create_initialization_options())
     finally:
+        if metrics_server:
+            metrics_server.close()
+            await metrics_server.wait_closed()
         if storage:
             await storage.close()
 

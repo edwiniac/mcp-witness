@@ -131,6 +131,7 @@ class SqliteStorage(StorageBackend):
         self._nonce_insert_count = 0
         self._record_insert_count = 0
         self._chain_valid_at_startup: Optional[bool] = None
+        self._chain_valid: bool = True
         self._last_record_hash: Optional[str] = None
         self._active_transactions: int = 0
         self._transaction_lock = asyncio.Lock()
@@ -150,6 +151,7 @@ class SqliteStorage(StorageBackend):
         # Startup chain verification
         result = await self.verify_chain_fast()
         self._chain_valid_at_startup = result.valid
+        self._chain_valid = result.valid
         if result.valid:
             logger.info(
                 "Startup chain verification: %d records checked, chain is VALID",
@@ -343,24 +345,18 @@ class SqliteStorage(StorageBackend):
             except Exception:
                 logger.debug("canonical_payload column already exists")
             try:
-                await self._db.execute(
-                    "ALTER TABLE witness_records ADD COLUMN signer_key_id TEXT"
-                )
+                await self._db.execute("ALTER TABLE witness_records ADD COLUMN signer_key_id TEXT")
             except Exception:
                 logger.debug("signer_key_id column already exists")
 
     async def _migrate_schema_for_crypto_hardening(self) -> None:
         """Add crypto hardening columns if they don't exist (non-versioned migration)."""
         try:
-            await self._db.execute(
-                "ALTER TABLE witness_records ADD COLUMN canonical_payload TEXT"
-            )
+            await self._db.execute("ALTER TABLE witness_records ADD COLUMN canonical_payload TEXT")
         except Exception:
             pass
         try:
-            await self._db.execute(
-                "ALTER TABLE witness_records ADD COLUMN signer_key_id TEXT"
-            )
+            await self._db.execute("ALTER TABLE witness_records ADD COLUMN signer_key_id TEXT")
         except Exception:
             pass
         await self._db.commit()
@@ -500,12 +496,12 @@ class SqliteStorage(StorageBackend):
                 # the in-memory _last_record_hash cache is lost.
                 if prev_hash != GENESIS_HASH:
                     cursor = await self._db.execute(
-                        "SELECT record_hash FROM witness_records"
-                        " ORDER BY sequence DESC LIMIT 1"
+                        "SELECT record_hash FROM witness_records" " ORDER BY sequence DESC LIMIT 1"
                     )
                     row = await cursor.fetchone()
                     db_last_hash = row[0] if row else None
                     if db_last_hash is not None and db_last_hash != prev_hash:
+                        self._chain_valid = False
                         logger.critical(
                             "CHAIN INVARIANT BROKEN at sequence %d: "
                             "expected prev_hash=%s (from DB), got %s. "
@@ -606,7 +602,15 @@ class SqliteStorage(StorageBackend):
                 )
 
                 await self._db.commit()
-                return sequence, prev_hash, record_hash, signature, signer_pk, canonical_payload_hex, signer_key_id
+                return (
+                    sequence,
+                    prev_hash,
+                    record_hash,
+                    signature,
+                    signer_pk,
+                    canonical_payload_hex,
+                    signer_key_id,
+                )
             except Exception:
                 await self._db.execute("ROLLBACK")
                 raise
@@ -1214,9 +1218,7 @@ class SqliteStorage(StorageBackend):
                         _metrics.signature_failures.inc()
                         if first_invalid is None:
                             first_invalid = record.sequence
-                        issues.append(
-                            f"Unknown signature format at sequence {record.sequence}"
-                        )
+                        issues.append(f"Unknown signature format at sequence {record.sequence}")
                 except Exception:
                     _metrics.signature_failures.inc()
                     if first_invalid is None:
@@ -1231,6 +1233,10 @@ class SqliteStorage(StorageBackend):
             first_invalid_sequence=first_invalid,
             issues=issues,
         )
+
+        # Update cached chain validity for full-chain scans (no range constraints)
+        if from_sequence is None and to_sequence is None:
+            self._chain_valid = result.valid
 
         # Fire webhook on chain failure (non-blocking, fails gracefully)
         if not result.valid:
@@ -1309,9 +1315,6 @@ class SqliteStorage(StorageBackend):
         )
         attested = (await cursor.fetchone())[0]
 
-        # Chain validity (quick check - just verify last 10)
-        verification = await self.verify_chain()
-
         return ChainStats(
             total_records=total,
             first_record_time=first_time,
@@ -1321,7 +1324,7 @@ class SqliteStorage(StorageBackend):
             records_by_action_type=by_action,
             records_by_sensitivity=by_sensitivity,
             attested_records=attested,
-            chain_valid=verification.valid,
+            chain_valid=self._chain_valid,
         )
 
     async def update_attestation(
@@ -1607,10 +1610,14 @@ class SqliteStorage(StorageBackend):
             )
             hashes = [r[0] for r in await cursor.fetchall()]
 
-            if cp.get("tree_data"):
-                # O(1): trust the stored tree structure
-                tree_data = json.loads(cp["tree_data"])
-                stored_root = tree_data[-1][0] if tree_data else None
+            stored_root: Optional[str] = None
+            if cp["tree_data"]:
+                tree_dict = json.loads(cp["tree_data"])
+                if isinstance(tree_dict, dict):
+                    stored_root = tree_dict.get("root")
+
+            if stored_root is not None:
+                # O(1): compare stored root against checkpoint record
                 if stored_root != cp["merkle_root"]:
                     issues.append(
                         f"Checkpoint {cp['id']} Merkle root mismatch "
@@ -1618,8 +1625,8 @@ class SqliteStorage(StorageBackend):
                         f"records {cp['from_sequence']}-{cp['to_sequence']}"
                     )
             else:
-                # Fallback: rebuild Merkle tree from scratch
-                # (only when tree_data is missing from the checkpoint)
+                # Fallback: rebuild Merkle tree from scratch.
+                # Triggered when tree_data is absent or malformed.
                 tree = build_merkle_tree(hashes)
                 if tree.root != cp["merkle_root"]:
                     issues.append(
@@ -2219,9 +2226,7 @@ class SqliteStorage(StorageBackend):
             canonical_payload=(
                 row["canonical_payload"] if "canonical_payload" in row.keys() else None
             ),
-            signer_key_id=(
-                row["signer_key_id"] if "signer_key_id" in row.keys() else None
-            ),
+            signer_key_id=(row["signer_key_id"] if "signer_key_id" in row.keys() else None),
             redacted_fields=json.loads(row["redacted_fields"]) if row["redacted_fields"] else [],
         )
 
