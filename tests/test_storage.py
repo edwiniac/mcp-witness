@@ -706,6 +706,7 @@ class TestEd25519StorageSigning:
         assert record.signature is not None
         # Signature is now versioned JSON (dict with algo, signature keys)
         import json
+
         sig_data = json.loads(record.signature)
         assert sig_data["algo"] == "ed25519+sha256:v1"
         assert len(sig_data["signature"]) == 128  # 64 bytes hex inside the JSON
@@ -779,6 +780,7 @@ class TestEd25519StorageSigning:
             assert record.signature is not None
             assert record.signer_public_key is not None
             import json
+
             sig_data = json.loads(record.signature)
             assert sig_data["algo"] == "ed25519+sha256:v1"
             assert len(sig_data["signature"]) == 128  # Ed25519 sig = 64 bytes = 128 hex chars
@@ -895,6 +897,7 @@ class TestEd25519StorageSigning:
     async def test_batch_records_signing_with_auto_generated_key(self, temp_storage):
         """Batch records are signed with auto-generated key."""
         import json
+
         records = await temp_storage.batch_record(
             [
                 {"action_type": ActionType.TOOL_CALL, "tool_name": "a"},
@@ -1109,3 +1112,57 @@ class TestStartupChainVerification:
             assert store._last_record_hash == r2.record_hash
 
             await store.close()
+
+
+class TestChainValidCaching:
+    """Verify the _chain_valid cached flag is maintained correctly.
+
+    get_stats() must never trigger a full O(n) chain scan; it reads from the
+    in-memory flag that is set during connect() and updated by verify_chain().
+    """
+
+    @pytest.mark.asyncio
+    async def test_fresh_storage_chain_valid_true(self, temp_storage):
+        """A newly initialised store reports chain_valid=True."""
+        assert temp_storage._chain_valid is True
+        stats = await temp_storage.get_stats()
+        assert stats.chain_valid is True
+
+    @pytest.mark.asyncio
+    async def test_get_stats_does_not_call_verify_chain(self, temp_storage):
+        """get_stats() must NOT call verify_chain() — cached flag only."""
+        from unittest.mock import AsyncMock, patch
+
+        await temp_storage.record(action_type=ActionType.TOOL_CALL, tool_name="t")
+
+        with patch.object(temp_storage, "verify_chain", new_callable=AsyncMock) as mock_vc:
+            stats = await temp_storage.get_stats()
+
+        mock_vc.assert_not_called()
+        assert stats.chain_valid is True
+
+    @pytest.mark.asyncio
+    async def test_full_verify_chain_updates_cached_flag(self, temp_storage):
+        """A full verify_chain() call (no range args) refreshes _chain_valid."""
+        await temp_storage.record(action_type=ActionType.TOOL_CALL, tool_name="t")
+
+        # Force the flag to False to confirm verify_chain resets it
+        temp_storage._chain_valid = False
+
+        result = await temp_storage.verify_chain()
+        assert result.valid is True
+        assert temp_storage._chain_valid is True
+
+    @pytest.mark.asyncio
+    async def test_ranged_verify_chain_does_not_update_flag(self, temp_storage):
+        """A ranged verify_chain() call must NOT overwrite the cached flag."""
+        await temp_storage.record(action_type=ActionType.TOOL_CALL, tool_name="t1")
+        await temp_storage.record(action_type=ActionType.TOOL_CALL, tool_name="t2")
+
+        temp_storage._chain_valid = False  # Simulate degraded state
+
+        # Range-scoped verification — should not touch the global flag
+        await temp_storage.verify_chain(from_sequence=0, to_sequence=0)
+        assert (
+            temp_storage._chain_valid is False
+        ), "A ranged verify_chain() must not overwrite the full-chain cached flag"

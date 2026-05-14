@@ -78,7 +78,7 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) ->
 
 
 async def start_metrics_server(
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     port: int = 9091,
 ) -> Optional[asyncio.AbstractServer]:
     """Start the Prometheus metrics HTTP server as a background asyncio task.

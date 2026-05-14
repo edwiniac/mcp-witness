@@ -57,8 +57,12 @@ MCP_WITNESS_PG_URL = os.getenv("MCP_WITNESS_PG_URL", "")
 # Graceful shutdown timeout (seconds to wait for in-flight writes)
 SHUTDOWN_TIMEOUT = int(os.getenv("MCP_WITNESS_SHUTDOWN_TIMEOUT", "30"))
 
-# Prometheus metrics port (0 = disabled)
-METRICS_PORT = int(os.getenv("MCP_WITNESS_METRICS_PORT", "0"))
+# Prometheus metrics port (0 = disabled); empty string treated as 0
+_raw_metrics_port = os.getenv("MCP_WITNESS_METRICS_PORT", "0").strip()
+METRICS_PORT = int(_raw_metrics_port) if _raw_metrics_port.isdigit() else 0
+
+# Prometheus metrics host (default: loopback only — do not expose to the network)
+METRICS_HOST = os.getenv("MCP_WITNESS_METRICS_HOST", "127.0.0.1")
 
 # When true, refuse to start without a persistent MCP_WITNESS_SIGNING_KEY
 REQUIRE_PERSISTENT_KEY = os.getenv("MCP_WITNESS_REQUIRE_PERSISTENT_KEY", "false").lower() == "true"
@@ -1275,7 +1279,7 @@ async def main():
     if METRICS_PORT:
         from .metrics_server import start_metrics_server
 
-        metrics_server = await start_metrics_server(port=METRICS_PORT)
+        metrics_server = await start_metrics_server(host=METRICS_HOST, port=METRICS_PORT)
 
     try:
         async with stdio_server() as (read_stream, write_stream):
