@@ -57,6 +57,12 @@ MCP_WITNESS_PG_URL = os.getenv("MCP_WITNESS_PG_URL", "")
 # Graceful shutdown timeout (seconds to wait for in-flight writes)
 SHUTDOWN_TIMEOUT = int(os.getenv("MCP_WITNESS_SHUTDOWN_TIMEOUT", "30"))
 
+# Prometheus metrics port (0 = disabled)
+METRICS_PORT = int(os.getenv("MCP_WITNESS_METRICS_PORT", "0"))
+
+# When true, refuse to start without a persistent MCP_WITNESS_SIGNING_KEY
+REQUIRE_PERSISTENT_KEY = os.getenv("MCP_WITNESS_REQUIRE_PERSISTENT_KEY", "false").lower() == "true"
+
 # Shutdown state
 _shutting_down = False
 
@@ -1246,6 +1252,14 @@ async def main():
 
     await storage.connect()
 
+    # Enforce persistent signing key when required
+    if REQUIRE_PERSISTENT_KEY and not os.getenv("MCP_WITNESS_SIGNING_KEY", "").strip():
+        raise RuntimeError(
+            "MCP_WITNESS_REQUIRE_PERSISTENT_KEY=true but MCP_WITNESS_SIGNING_KEY is not set. "
+            "Non-repudiation requires a persistent 32-byte hex seed. "
+            "Generate one with: openssl rand -hex 32"
+        )
+
     # Warn on startup chain verification failure (degraded operation)
     chain_ok = getattr(storage, "_chain_valid_at_startup", None)
     if chain_ok is False:
@@ -1255,10 +1269,20 @@ async def main():
             "Run witness_verify to diagnose."
         )
 
+    # Start Prometheus metrics endpoint if configured
+    metrics_server = None
+    if METRICS_PORT:
+        from .metrics_server import start_metrics_server
+
+        metrics_server = await start_metrics_server(port=METRICS_PORT)
+
     try:
         async with stdio_server() as (read_stream, write_stream):
             await server.run(read_stream, write_stream, server.create_initialization_options())
     finally:
+        if metrics_server:
+            metrics_server.close()
+            await metrics_server.wait_closed()
         if storage:
             await storage.close()
 

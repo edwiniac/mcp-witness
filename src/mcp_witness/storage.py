@@ -131,6 +131,7 @@ class SqliteStorage(StorageBackend):
         self._nonce_insert_count = 0
         self._record_insert_count = 0
         self._chain_valid_at_startup: Optional[bool] = None
+        self._chain_valid: bool = True
         self._last_record_hash: Optional[str] = None
         self._active_transactions: int = 0
         self._transaction_lock = asyncio.Lock()
@@ -150,6 +151,7 @@ class SqliteStorage(StorageBackend):
         # Startup chain verification
         result = await self.verify_chain_fast()
         self._chain_valid_at_startup = result.valid
+        self._chain_valid = result.valid
         if result.valid:
             logger.info(
                 "Startup chain verification: %d records checked, chain is VALID",
@@ -506,6 +508,7 @@ class SqliteStorage(StorageBackend):
                     row = await cursor.fetchone()
                     db_last_hash = row[0] if row else None
                     if db_last_hash is not None and db_last_hash != prev_hash:
+                        self._chain_valid = False
                         logger.critical(
                             "CHAIN INVARIANT BROKEN at sequence %d: "
                             "expected prev_hash=%s (from DB), got %s. "
@@ -1232,6 +1235,10 @@ class SqliteStorage(StorageBackend):
             issues=issues,
         )
 
+        # Update cached chain validity for full-chain scans (no range constraints)
+        if from_sequence is None and to_sequence is None:
+            self._chain_valid = result.valid
+
         # Fire webhook on chain failure (non-blocking, fails gracefully)
         if not result.valid:
             _metrics.chain_breaks.inc()
@@ -1309,9 +1316,6 @@ class SqliteStorage(StorageBackend):
         )
         attested = (await cursor.fetchone())[0]
 
-        # Chain validity (quick check - just verify last 10)
-        verification = await self.verify_chain()
-
         return ChainStats(
             total_records=total,
             first_record_time=first_time,
@@ -1321,7 +1325,7 @@ class SqliteStorage(StorageBackend):
             records_by_action_type=by_action,
             records_by_sensitivity=by_sensitivity,
             attested_records=attested,
-            chain_valid=verification.valid,
+            chain_valid=self._chain_valid,
         )
 
     async def update_attestation(
@@ -1607,10 +1611,10 @@ class SqliteStorage(StorageBackend):
             )
             hashes = [r[0] for r in await cursor.fetchall()]
 
-            if cp.get("tree_data"):
+            if cp["tree_data"]:
                 # O(1): trust the stored tree structure
                 tree_data = json.loads(cp["tree_data"])
-                stored_root = tree_data[-1][0] if tree_data else None
+                stored_root = tree_data.get("root") if isinstance(tree_data, dict) else None
                 if stored_root != cp["merkle_root"]:
                     issues.append(
                         f"Checkpoint {cp['id']} Merkle root mismatch "
