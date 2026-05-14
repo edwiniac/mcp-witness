@@ -673,7 +673,7 @@ async def handle_stats(store: StorageBackend) -> dict:
 
 async def handle_attest(store: StorageBackend, args: dict) -> dict:
     """Handle witness_attest tool call — uses real RFC 3161 TSA when available."""
-    from .anchoring import AnchorService, TSAProvider, AnchorType
+    from .anchoring import AnchorService, AnchorType, TSAProvider
 
     record_id = args.get("record_id")
     batch = args.get("batch", True)
@@ -1250,15 +1250,16 @@ async def main():
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(_handle_shutdown(s)))
 
-    await storage.connect()
-
-    # Enforce persistent signing key when required
+    # Enforce persistent signing key before touching the database.
+    # Checked here (before connect) so no cleanup is needed on failure.
     if REQUIRE_PERSISTENT_KEY and not os.getenv("MCP_WITNESS_SIGNING_KEY", "").strip():
         raise RuntimeError(
             "MCP_WITNESS_REQUIRE_PERSISTENT_KEY=true but MCP_WITNESS_SIGNING_KEY is not set. "
             "Non-repudiation requires a persistent 32-byte hex seed. "
             "Generate one with: openssl rand -hex 32"
         )
+
+    await storage.connect()
 
     # Warn on startup chain verification failure (degraded operation)
     chain_ok = getattr(storage, "_chain_valid_at_startup", None)

@@ -17,7 +17,11 @@ logger = logging.getLogger(__name__)
 _METRIC_DEFS = [
     ("chain_breaks_total", "counter", "Total chain integrity failures detected"),
     ("signature_failures_total", "counter", "Total Ed25519 signature verification failures"),
-    ("anchor_verification_failures_total", "counter", "Total external anchor verification failures"),
+    (
+        "anchor_verification_failures_total",
+        "counter",
+        "Total external anchor verification failures",
+    ),
     ("rate_limit_hits_total", "counter", "Total rate-limit rejections"),
     ("idempotency_duplicates_total", "counter", "Total duplicate-action rejections"),
     ("records_written_total", "counter", "Total audit records written"),
@@ -25,6 +29,10 @@ _METRIC_DEFS = [
 ]
 
 _PREFIX = "mcp_witness_"
+
+# Guard against a slow client holding the connection open by sending
+# one header line every ~5 seconds indefinitely.
+_MAX_REQUEST_HEADERS = 100
 
 
 def _render_prometheus() -> str:
@@ -42,21 +50,22 @@ def _render_prometheus() -> str:
 async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     """Handle a single HTTP request, return metrics, close connection."""
     try:
-        # Read and discard the entire HTTP request
-        while True:
+        # Read and discard the entire HTTP request (headers only; no body expected).
+        # The line limit guards against a slow-sender keeping the socket open.
+        for _ in range(_MAX_REQUEST_HEADERS):
             line = await asyncio.wait_for(reader.readline(), timeout=5.0)
             if line in (b"\r\n", b"\n", b""):
                 break
 
         body = _render_prometheus().encode()
-        header = (
-            b"HTTP/1.1 200 OK\r\n"
-            b"Content-Type: text/plain; version=0.0.4; charset=utf-8\r\n"
-            + b"Content-Length: " + str(len(body)).encode() + b"\r\n"
-            + b"Connection: close\r\n"
-            + b"\r\n"
-        )
-        writer.write(header + body)
+        response = (
+            f"HTTP/1.1 200 OK\r\n"
+            f"Content-Type: text/plain; version=0.0.4; charset=utf-8\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            f"Connection: close\r\n"
+            f"\r\n"
+        ).encode() + body
+        writer.write(response)
         await writer.drain()
     except Exception as exc:
         logger.debug("metrics_server: request handling error: %s", exc)
