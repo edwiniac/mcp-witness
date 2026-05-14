@@ -55,3 +55,4 @@ Thumbs.db
 # Secrets
 .env
 *.env.local
+.coverage
