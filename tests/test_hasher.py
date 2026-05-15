@@ -376,7 +376,9 @@ class TestCryptoAgility:
         private_key, _ = self._make_keypair()
         record_hash = "abc123"
 
-        result = versioned_sign(record_hash, private_key, CURRENT_SIGNING_ALGO.value, key_id="key-001")
+        result = versioned_sign(
+            record_hash, private_key, CURRENT_SIGNING_ALGO.value, key_id="key-001"
+        )
 
         assert result["key_id"] == "key-001"
 
@@ -426,6 +428,7 @@ class TestCryptoAgility:
         import json
 
         from mcp_witness.crypto_agility import detect_signature_format
+
         sig = json.dumps({"algo": "ed25519+sha256:v1", "signature": "aa" * 64})
         assert detect_signature_format(sig) == "versioned"
 
@@ -469,14 +472,22 @@ class TestCanonicalPayload:
         from mcp_witness.hasher import canonicalize_record_fields
 
         b1 = canonicalize_record_fields(
-            prev_hash="abc", sequence=0, timestamp="2026-01-01T00:00:00+00:00",
-            action_type="tool_call", actor_id="agent-1",
-            input_hash="in123", output_hash="out456",
+            prev_hash="abc",
+            sequence=0,
+            timestamp="2026-01-01T00:00:00+00:00",
+            action_type="tool_call",
+            actor_id="agent-1",
+            input_hash="in123",
+            output_hash="out456",
         )
         b2 = canonicalize_record_fields(
-            prev_hash="def", sequence=1, timestamp="2026-01-02T00:00:00+00:00",
-            action_type="decision", actor_id="agent-2",
-            input_hash="in999", output_hash="out000",
+            prev_hash="def",
+            sequence=1,
+            timestamp="2026-01-02T00:00:00+00:00",
+            action_type="decision",
+            actor_id="agent-2",
+            input_hash="in999",
+            output_hash="out000",
         )
         assert b1 != b2
 
@@ -485,14 +496,22 @@ class TestCanonicalPayload:
         from mcp_witness.hasher import canonicalize_record_fields
 
         b1 = canonicalize_record_fields(
-            prev_hash="abc", sequence=0, timestamp="2026-01-01T00:00:00+00:00",
-            action_type="tool_call", actor_id="agent-1",
-            input_hash="in123", output_hash="out456",
+            prev_hash="abc",
+            sequence=0,
+            timestamp="2026-01-01T00:00:00+00:00",
+            action_type="tool_call",
+            actor_id="agent-1",
+            input_hash="in123",
+            output_hash="out456",
         )
         b2 = canonicalize_record_fields(
-            prev_hash="abc", sequence=0, timestamp="2026-01-01T00:00:00+00:00",
-            action_type="tool_call", actor_id="agent-1",
-            input_hash="in123", output_hash="out456",
+            prev_hash="abc",
+            sequence=0,
+            timestamp="2026-01-01T00:00:00+00:00",
+            action_type="tool_call",
+            actor_id="agent-1",
+            input_hash="in123",
+            output_hash="out456",
             tool_name="search_tool",
         )
         assert b1 != b2
@@ -504,9 +523,13 @@ class TestCanonicalPayload:
         from mcp_witness.hasher import canonicalize_record_fields
 
         b = canonicalize_record_fields(
-            prev_hash="abc", sequence=0, timestamp="2026-01-01T00:00:00+00:00",
-            action_type="tool_call", actor_id="agent-1",
-            input_hash="in123", output_hash="out456",
+            prev_hash="abc",
+            sequence=0,
+            timestamp="2026-01-01T00:00:00+00:00",
+            action_type="tool_call",
+            actor_id="agent-1",
+            input_hash="in123",
+            output_hash="out456",
         )
         payload = json.loads(b.decode())
         assert payload["v"] == 1
@@ -530,9 +553,13 @@ class TestCanonicalPayload:
         )
 
         canonical_bytes = canonicalize_record_fields(
-            prev_hash="abc", sequence=0, timestamp="2026-01-01T00:00:00+00:00",
-            action_type="tool_call", actor_id="agent-1",
-            input_hash="in123", output_hash="out456",
+            prev_hash="abc",
+            sequence=0,
+            timestamp="2026-01-01T00:00:00+00:00",
+            action_type="tool_call",
+            actor_id="agent-1",
+            input_hash="in123",
+            output_hash="out456",
         )
 
         sig_data = sign_canonical_payload(canonical_bytes, private_key, CURRENT_SIGNING_ALGO.value)
@@ -543,9 +570,13 @@ class TestCanonicalPayload:
 
         # Verify with wrong canonical bytes
         wrong_bytes = canonicalize_record_fields(
-            prev_hash="wrong", sequence=0, timestamp="2026-01-01T00:00:00+00:00",
-            action_type="tool_call", actor_id="agent-1",
-            input_hash="in123", output_hash="out456",
+            prev_hash="wrong",
+            sequence=0,
+            timestamp="2026-01-01T00:00:00+00:00",
+            action_type="tool_call",
+            actor_id="agent-1",
+            input_hash="in123",
+            output_hash="out456",
         )
         assert verify_canonical_signature(wrong_bytes, sig_data, public_key_bytes) is False
 
@@ -562,10 +593,16 @@ class TestCanonicalPayload:
         private_key = ed25519.Ed25519PrivateKey.generate()
 
         canonical_bytes = canonicalize_record_fields(
-            prev_hash="abc", sequence=0, timestamp="2026-01-01T00:00:00+00:00",
-            action_type="tool_call", actor_id="agent-1",
-            input_hash="in123", output_hash="out456",
+            prev_hash="abc",
+            sequence=0,
+            timestamp="2026-01-01T00:00:00+00:00",
+            action_type="tool_call",
+            actor_id="agent-1",
+            input_hash="in123",
+            output_hash="out456",
         )
 
-        sig_data = sign_canonical_payload(canonical_bytes, private_key, CURRENT_SIGNING_ALGO.value, key_id="key-001")
+        sig_data = sign_canonical_payload(
+            canonical_bytes, private_key, CURRENT_SIGNING_ALGO.value, key_id="key-001"
+        )
         assert sig_data.get("key_id") == "key-001"

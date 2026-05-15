@@ -598,7 +598,13 @@ class TestLogFilter:
 
         filt = SensitiveDataFilter()
         record = logging.LogRecord(
-            "test", logging.INFO, "file.py", 10, "api_key=abcdef1234567890abcdef1234567890", (), None
+            "test",
+            logging.INFO,
+            "file.py",
+            10,
+            "api_key=abcdef1234567890abcdef1234567890",
+            (),
+            None,
         )
         filt.filter(record)
         assert "[CREDENTIAL]" in record.msg

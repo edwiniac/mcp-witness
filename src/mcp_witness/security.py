@@ -105,9 +105,20 @@ def decrypt_field(encrypted: str) -> str:
 
 
 _SENSITIVE_FIELD_PATTERNS = {
-    "email", "phone", "ssn", "dob", "address", "name",
-    "creditcard", "bankaccount", "medicalrecord", "patientid",
-    "apikey", "password", "secret", "token",
+    "email",
+    "phone",
+    "ssn",
+    "dob",
+    "address",
+    "name",
+    "creditcard",
+    "bankaccount",
+    "medicalrecord",
+    "patientid",
+    "apikey",
+    "password",
+    "secret",
+    "token",
 }
 
 
@@ -147,7 +158,7 @@ def get_hmac_key() -> Optional[bytes]:
     """
     global _hmac_key
     if _hmac_key is not _HMAC_KEY_UNSET:
-        return _hmac_key
+        return _hmac_key  # type: ignore[return-value]
 
     env_key = os.getenv("MCP_WITNESS_HMAC_KEY", "").strip()
     if env_key:
@@ -193,7 +204,7 @@ async def check_rate_limit(
         max_tokens: Maximum tokens the bucket can hold.
         refill_rate: Tokens added per second.
     """
-    allowed = await storage.check_rate_limit(  # type: ignore[union-attr]
+    allowed = await storage.check_rate_limit(  # type: ignore[attr-defined]
         bucket_id=bucket_id,
         max_tokens=max_tokens,
         refill_rate=refill_rate,
@@ -321,7 +332,7 @@ def get_signing_key() -> Optional[object]:
                     current_key_id,
                 )
     except Exception:
-        pass
+        pass  # nosec B110 — key resolution failure is non-fatal; signing degrades gracefully
 
     return _signing_key
 
@@ -408,7 +419,7 @@ async def check_idempotency(
     Returns True if this is a NEW payload (allow it),
     False if it's a duplicate (reject it).
     """
-    return await storage.check_and_record_nonce(  # type: ignore[union-attr]
+    return await storage.check_and_record_nonce(  # type: ignore[attr-defined, no-any-return]
         nonce_hash=nonce_hash,
         ttl_seconds=ttl_seconds,
     )

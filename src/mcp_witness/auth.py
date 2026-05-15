@@ -145,7 +145,7 @@ def verify_jwt_assertion(token: str) -> Optional[dict]:
             logger.warning("JWT token exceeds max age (%ds)", MCP_WITNESS_JWT_MAX_AGE)
             return None
 
-        return payload
+        return payload  # type: ignore[no-any-return]
 
     except Exception as e:
         logger.warning("JWT verification failed: %s", e)

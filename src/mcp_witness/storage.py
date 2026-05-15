@@ -354,11 +354,11 @@ class SqliteStorage(StorageBackend):
         try:
             await self._db.execute("ALTER TABLE witness_records ADD COLUMN canonical_payload TEXT")
         except Exception:
-            pass
+            pass  # nosec B110 — column already exists (SQLite has no ADD COLUMN IF NOT EXISTS)
         try:
             await self._db.execute("ALTER TABLE witness_records ADD COLUMN signer_key_id TEXT")
         except Exception:
-            pass
+            pass  # nosec B110
         await self._db.commit()
 
     async def _get_last_record(self) -> Optional[dict]:
@@ -1015,7 +1015,7 @@ class SqliteStorage(StorageBackend):
             WHERE {where_clause}
             ORDER BY sequence ASC
             LIMIT ? OFFSET ?
-            """,
+            """,  # nosec B608 — where_clause built from validated enum values and param placeholders only
             (*params, limit, offset),
         )
         rows = await cursor.fetchall()
@@ -1082,7 +1082,8 @@ class SqliteStorage(StorageBackend):
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
         cursor = await self._db.execute(
-            f"SELECT * FROM witness_records WHERE {where_clause} ORDER BY sequence ASC", params
+            f"SELECT * FROM witness_records WHERE {where_clause} ORDER BY sequence ASC",  # nosec B608
+            params,
         )
         rows = await cursor.fetchall()
 
@@ -1255,7 +1256,7 @@ class SqliteStorage(StorageBackend):
 
                     asyncio.create_task(notify_chain_failure_slack(result))
                 except Exception:
-                    pass
+                    pass  # nosec B110 — webhook is optional; import or call failure is non-fatal
             except Exception:
                 logger.debug("Webhook notification skipped (not configured or import failed)")
 
@@ -1421,7 +1422,7 @@ class SqliteStorage(StorageBackend):
             try:
                 await self.anchor_checkpoint(checkpoint_id)
             except Exception:
-                pass  # Don't fail record creation if anchoring fails
+                pass  # nosec B110 — anchor failure must not break record creation
 
         return checkpoint
 
@@ -1566,7 +1567,7 @@ class SqliteStorage(StorageBackend):
             params.append(to_sequence)
 
         cursor = await self._db.execute(
-            f"SELECT * FROM witness_checkpoints WHERE {' AND '.join(conditions)} ORDER BY id",
+            f"SELECT * FROM witness_checkpoints WHERE {' AND '.join(conditions)} ORDER BY id",  # nosec B608 — conditions built from validated seq numbers only
             params,
         )
         checkpoints = await cursor.fetchall()
@@ -1582,7 +1583,7 @@ class SqliteStorage(StorageBackend):
                 )
                 # Re-query with checkpoints now available
                 cursor = await self._db.execute(
-                    f"SELECT * FROM witness_checkpoints WHERE {' AND '.join(conditions)} ORDER BY id",
+                    f"SELECT * FROM witness_checkpoints WHERE {' AND '.join(conditions)} ORDER BY id",  # nosec B608
                     params,
                 )
                 checkpoints = await cursor.fetchall()
@@ -1671,7 +1672,7 @@ class SqliteStorage(StorageBackend):
     async def anchor_checkpoint(
         self,
         checkpoint_id: int,
-        anchor_types: list[AnchorType] = None,
+        anchor_types: Optional[list[AnchorType]] = None,
     ) -> list[AnchorReceipt]:
         """
         Anchor a checkpoint to external trust sources.

@@ -447,7 +447,10 @@ class TestHealthCheck:
 
         assert "chain_verified_at_startup" in result
         # Fresh storage should have valid chain at startup or None if not yet checked
-        assert result["chain_verified_at_startup"] is True or result["chain_verified_at_startup"] is None
+        assert (
+            result["chain_verified_at_startup"] is True
+            or result["chain_verified_at_startup"] is None
+        )
 
     @pytest.mark.asyncio
     async def test_health_returns_status(self, temp_storage):

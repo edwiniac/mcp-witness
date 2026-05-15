@@ -311,14 +311,14 @@ class PgStorage(StorageBackend):
                         f"ALTER TABLE witness_records ADD COLUMN IF NOT EXISTS {col} TEXT"
                     )
                 except Exception:
-                    logger.debug("Column %s already exists (or PG < 9.6 without IF NOT EXISTS)", col)
+                    logger.debug(
+                        "Column %s already exists (or PG < 9.6 without IF NOT EXISTS)", col
+                    )
                     # Fallback for older PG versions
                     try:
-                        await conn.execute(
-                            f"ALTER TABLE witness_records ADD COLUMN {col} TEXT"
-                        )
+                        await conn.execute(f"ALTER TABLE witness_records ADD COLUMN {col} TEXT")
                     except Exception:
-                        pass
+                        pass  # nosec B110 — column already exists; PG < 9.6 fallback
 
     # =========================================================================
     # Internal Helpers
@@ -929,7 +929,7 @@ class PgStorage(StorageBackend):
                 WHERE {where_clause}
                 ORDER BY sequence ASC
                 LIMIT {limit_ph} OFFSET {offset_ph}
-                """,
+                """,  # nosec B608 — where_clause built from validated enum/param placeholders only
                 *params,
             )
             return [self._row_to_record(row) for row in rows]
@@ -1000,7 +1000,7 @@ class PgStorage(StorageBackend):
 
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                f"SELECT * FROM witness_records WHERE {where_clause} ORDER BY sequence ASC",
+                f"SELECT * FROM witness_records WHERE {where_clause} ORDER BY sequence ASC",  # nosec B608
                 *params,
             )
 
@@ -1129,9 +1129,7 @@ class PgStorage(StorageBackend):
                         else:
                             if first_invalid is None:
                                 first_invalid = record.sequence
-                            issues.append(
-                                f"Unknown signature format at sequence {record.sequence}"
-                            )
+                            issues.append(f"Unknown signature format at sequence {record.sequence}")
                     except Exception:
                         if first_invalid is None:
                             first_invalid = record.sequence
@@ -1170,7 +1168,7 @@ class PgStorage(StorageBackend):
 
         async with self._pool.acquire() as conn:
             checkpoints = await conn.fetch(
-                f"SELECT * FROM witness_checkpoints WHERE {' AND '.join(conditions)} ORDER BY id",
+                f"SELECT * FROM witness_checkpoints WHERE {' AND '.join(conditions)} ORDER BY id",  # nosec B608
                 *params,
             )
 
@@ -1471,7 +1469,7 @@ class PgStorage(StorageBackend):
             try:
                 await self.anchor_checkpoint(checkpoint_id)
             except Exception:
-                pass  # Don't fail record creation if anchoring fails
+                pass  # nosec B110 — anchor failure must not break record creation
 
         return checkpoint
 
