@@ -67,6 +67,12 @@ def get_data_encryption_key() -> bytes:
             raise ValueError("MCP_WITNESS_DEK must be 32 bytes (64 hex chars)")
     else:
         _DEK = AESGCM.generate_key(bit_length=256)
+        logger.warning(
+            "MCP_WITNESS_DEK not set — using EPHEMERAL encryption key. "
+            "Sensitive fields encrypted this session CANNOT be decrypted after restart. "
+            "Set MCP_WITNESS_DEK to a persistent 32-byte hex key (openssl rand -hex 32) "
+            "for durable field-level encryption."
+        )
     return _DEK
 
 
@@ -484,8 +490,10 @@ def validate_export_path(output_path: str) -> Path:
 # ---------------------------------------------------------------------------
 
 SESSION_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_\-:.]*$")
+TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_\-:.]*$")
 MAX_SESSION_ID_LENGTH = 256
 MAX_ACTOR_ID_LENGTH = 256
+MAX_TOOL_NAME_LENGTH = 256
 MAX_REASONING_LENGTH = 10000  # 10KB of reasoning text
 
 
@@ -493,6 +501,7 @@ def validate_inputs(
     session_id: str = "",
     actor_id: str = "unknown",
     reasoning: Optional[str] = None,
+    tool_name: Optional[str] = None,
 ) -> None:
     """
     Validate all user-supplied string inputs.
@@ -506,6 +515,12 @@ def validate_inputs(
 
     if actor_id and len(actor_id) > MAX_ACTOR_ID_LENGTH:
         raise ValueError(f"actor_id exceeds max length {MAX_ACTOR_ID_LENGTH}")
+
+    if tool_name is not None:
+        if len(tool_name) > MAX_TOOL_NAME_LENGTH:
+            raise ValueError(f"tool_name exceeds max length {MAX_TOOL_NAME_LENGTH}")
+        if tool_name and not TOOL_NAME_PATTERN.match(tool_name):
+            raise ValueError("tool_name contains invalid characters")
 
     if reasoning and len(reasoning) > MAX_REASONING_LENGTH:
         raise ValueError(f"reasoning exceeds max length {MAX_REASONING_LENGTH}")

@@ -421,7 +421,7 @@ class PgStorage(StorageBackend):
         _validate_payload_size(input_data, "input_data")
         _validate_payload_size(output_data, "output_data")
         _validate_payload_size(context, "context")
-        validate_inputs(session_id, actor_id, reasoning)
+        validate_inputs(session_id, actor_id, reasoning, tool_name=tool_name)
 
         # Rate limiting
         await check_rate_limit(self, bucket_id=actor_id)
@@ -466,8 +466,70 @@ class PgStorage(StorageBackend):
 
         record_id = uuid4()
 
+        _max_retries = 5
+        for _attempt in range(_max_retries):
+            try:
+                return await self._record_attempt(
+                    record_id=record_id,
+                    action_type=action_type,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
+                    session_id=session_id,
+                    tool_name=tool_name,
+                    encrypted_input=encrypted_input,
+                    encrypted_output=encrypted_output,
+                    processed_input=processed_input,
+                    processed_output=processed_output,
+                    input_hash=input_hash,
+                    output_hash=output_hash,
+                    context=context,
+                    reasoning=reasoning,
+                    confidence=confidence,
+                    sensitivity=sensitivity,
+                    retention_days=retention_days,
+                    redacted_fields=redacted_fields,
+                    timestamp=timestamp,
+                    org_id=org_id,
+                )
+            except asyncpg.exceptions.UniqueViolationError:
+                if _attempt == _max_retries - 1:
+                    raise
+                logger.warning(
+                    "Sequence conflict on attempt %d/%d, retrying",
+                    _attempt + 1,
+                    _max_retries,
+                )
+                record_id = uuid4()
+
+        raise RuntimeError("unreachable")  # pragma: no cover
+
+    async def _record_attempt(
+        self,
+        *,
+        record_id: "UUID",
+        action_type: "ActionType",
+        actor_type: "ActorType",
+        actor_id: str,
+        session_id: str,
+        tool_name: Optional[str],
+        encrypted_input: Optional[dict],
+        encrypted_output: Optional[dict],
+        processed_input: Optional[dict],
+        processed_output: Optional[dict],
+        input_hash: str,
+        output_hash: str,
+        context: Optional[dict],
+        reasoning: Optional[str],
+        confidence: Optional[float],
+        sensitivity: "Sensitivity",
+        retention_days: int,
+        redacted_fields: list,
+        timestamp: "datetime",
+        org_id: Optional[str],
+    ) -> "WitnessRecord":
+        """Execute one insert attempt inside a SERIALIZABLE transaction."""
         async with self._pool.acquire() as conn:
-            async with conn.transaction():
+            async with conn.transaction(isolation="serializable"):
                 # Get chain state inside the transaction
                 last_record = await self._get_last_record(conn)
                 prev_hash = last_record["record_hash"] if last_record else GENESIS_HASH
@@ -493,7 +555,6 @@ class PgStorage(StorageBackend):
                 signer_key_id = None
                 if signing_key is not None:
                     key_id = get_signing_key_id()
-                    # Canonical payload for versioned signing
                     canonical_bytes = canonicalize_record_fields(
                         prev_hash=prev_hash,
                         sequence=sequence,
@@ -510,12 +571,11 @@ class PgStorage(StorageBackend):
                         CURRENT_SIGNING_ALGO.value,
                         key_id=key_id,
                     )
-                    signature = json.dumps(sig_data)  # Store as JSON string
+                    signature = json.dumps(sig_data)
                     signer_pk = get_public_key_hex()
                     canonical_payload_hex = canonical_bytes.hex()
                     signer_key_id = key_id
 
-                # Resolve org_id: prefer explicit, fall back to env var
                 resolved_org_id = org_id or os.getenv("MCP_WITNESS_ORG_ID") or None
 
                 await conn.execute(
@@ -573,7 +633,6 @@ class PgStorage(StorageBackend):
             )
         self._last_record_hash = record_hash
 
-        # Create record object
         record = WitnessRecord(
             id=record_id,
             timestamp=timestamp,
@@ -601,7 +660,6 @@ class PgStorage(StorageBackend):
             redacted_fields=redacted_fields,
         )
 
-        # Check if we should create a checkpoint (outside the transaction)
         await self._maybe_create_checkpoint(record.sequence)
 
         return record
@@ -656,7 +714,7 @@ class PgStorage(StorageBackend):
             _validate_payload_size(input_data, "input_data")
             _validate_payload_size(output_data, "output_data")
             _validate_payload_size(context, "context")
-            validate_inputs(session_id, actor_id, reasoning)
+            validate_inputs(session_id, actor_id, reasoning, tool_name=tool_name)
 
             # Compute hashes
             input_hash = hash_data(input_data) if input_data else ""

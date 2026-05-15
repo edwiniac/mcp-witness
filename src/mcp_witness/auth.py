@@ -9,6 +9,7 @@ Provides:
 - Backward compatibility with deprecated READ_ONLY_MODE
 """
 
+import hmac
 import json
 import logging
 import os
@@ -45,6 +46,8 @@ _READ_TOOLS = frozenset(
         "witness_checkpoints",
         "witness_proof",
         "witness_metrics",
+        "witness_health",
+        "witness_search",
     }
 )
 
@@ -55,6 +58,7 @@ _WRITE_TOOLS = frozenset(
         "witness_anchor",
         "witness_backfill",
         "witness_configure_compliance",
+        "witness_delete",
     }
 )
 
@@ -200,7 +204,11 @@ def _lookup_api_key(token: str) -> Optional[AuthRole]:
     if not token:
         return None
     api_keys = load_api_keys()
-    return api_keys.get(token)
+    token_bytes = token.encode()
+    for key, role in api_keys.items():
+        if hmac.compare_digest(key.encode(), token_bytes):
+            return role
+    return None
 
 
 def authenticate(token: Optional[str] = None) -> Optional[AuthRole]:

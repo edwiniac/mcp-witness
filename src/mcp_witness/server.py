@@ -1171,7 +1171,7 @@ async def handle_delete(store: StorageBackend, args: dict) -> dict:
             "Data fields are nulled; hash chain integrity is preserved.",
         }
     except Exception as e:
-        return {"error": str(e)}
+        return sanitize_error(e)
 
 
 async def handle_search(store: StorageBackend, args: dict) -> dict:
@@ -1219,7 +1219,7 @@ async def handle_search(store: StorageBackend, args: dict) -> dict:
             ],
         }
     except Exception as e:
-        return {"error": str(e)}
+        return sanitize_error(e)
 
 
 async def _handle_shutdown(sig: signal.Signals) -> None:
@@ -1233,7 +1233,8 @@ async def _handle_shutdown(sig: signal.Signals) -> None:
     logger.info("Received signal %s, shutting down gracefully", sig_name)
 
     # Wait for in-flight writes
-    assert storage is not None
+    if storage is None:
+        return
     deadline = time.monotonic() + SHUTDOWN_TIMEOUT
     while time.monotonic() < deadline:
         if not await storage.has_inflight_writes():

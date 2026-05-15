@@ -54,7 +54,7 @@ No built-in replication, clustering, or HA. Back up your database regularly.
 See [docs/backup.md](docs/backup.md).
 
 **Encryption at rest requires configuration.** Compliance presets reference AES-256-GCM
-but encryption is NOT active by default. Set `MCP_WITNESS_ENCRYPTION_KEY` to enable
+but encryption is NOT active by default. Set `MCP_WITNESS_DEK` to enable
 field-level envelope encryption. Without it, sensitive fields are stored as plaintext
 JSON.
 
@@ -240,6 +240,36 @@ Single record: **O(log n)** with Merkle proof (vs O(n) linear scan).
 - **Structured logging** — optional JSON log format for production monitoring
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the security disclosure policy.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `MCP_WITNESS_DB` | `~/.mcp-witness/witness.db` | Path to SQLite database |
+| `MCP_WITNESS_DATABASE_URL` | — | PostgreSQL URL; enables PG backend |
+| `MCP_WITNESS_DEK` | ephemeral | 32-byte hex AES-256-GCM data encryption key |
+| `MCP_WITNESS_HMAC_KEY` | — | 32-byte hex HMAC key for hash chain protection |
+| `MCP_WITNESS_SIGNING_KEY` | ephemeral | 32-byte hex Ed25519 seed for record signing |
+| `MCP_WITNESS_REQUIRE_PERSISTENT_KEY` | `false` | Refuse startup when signing key is ephemeral |
+| `MCP_WITNESS_JWT_PUBLIC_KEY` | — | Hex-encoded Ed25519 public key for JWT auth |
+| `MCP_WITNESS_JWT_MAX_AGE` | `3600` | Maximum JWT token age in seconds |
+| `MCP_WITNESS_API_KEYS` | — | Comma-separated `key:role` pairs (admin/auditor/writer) |
+| `MCP_WITNESS_ALLOW_ANON_WRITES` | `false` | Allow unauthenticated write access when API keys are set |
+| `MCP_WITNESS_RATE_LIMIT` | `1000` | Token bucket size and refill rate (records/s) |
+| `MCP_WITNESS_EXPORT_DIR` | cwd | Directory exports are confined to |
+| `MCP_WITNESS_WEBHOOK_URL` | — | URL to POST chain integrity alerts to |
+| `MCP_WITNESS_CHECKPOINT_INTERVAL` | `1000` | Records per Merkle checkpoint |
+| `MCP_WITNESS_AUTO_ANCHOR` | `false` | Anchor each checkpoint automatically |
+| `MCP_WITNESS_ANCHOR_STRICT` | `true` | Treat anchoring provider failures as errors |
+| `MCP_WITNESS_SHUTDOWN_TIMEOUT` | `30` | Seconds to wait for in-flight writes on SIGTERM |
+| `MCP_WITNESS_METRICS_HOST` | `127.0.0.1` | Bind address for Prometheus metrics server |
+| `MCP_WITNESS_METRICS_PORT` | `9091` | Port for Prometheus metrics server |
+| `MCP_WITNESS_LOG_FORMAT` | `text` | Log format: `text` or `json` |
+| `MCP_WITNESS_ORG_ID` | — | Organization identifier stamped on each record |
+| `TSA_URL` | FreeTSA | RFC 3161 Time Stamp Authority URL |
+| `PINATA_API_KEY` / `PINATA_API_SECRET` | — | Pinata credentials for IPFS anchoring |
+| `OTS_SERVER` | — | OpenTimestamps server URL |
+| `PG_MIN_CONNECTIONS` / `PG_MAX_CONNECTIONS` | `2` / `10` | asyncpg pool size |
 
 ## 🧪 Development
 

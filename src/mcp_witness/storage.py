@@ -436,7 +436,7 @@ class SqliteStorage(StorageBackend):
         _validate_payload_size(input_data, "input_data")
         _validate_payload_size(output_data, "output_data")
         _validate_payload_size(context, "context")
-        validate_inputs(session_id, actor_id, reasoning)
+        validate_inputs(session_id, actor_id, reasoning, tool_name=tool_name)
 
         # Rate limiting
         await check_rate_limit(self, bucket_id=actor_id)
@@ -728,7 +728,7 @@ class SqliteStorage(StorageBackend):
             _validate_payload_size(input_data, "input_data")
             _validate_payload_size(output_data, "output_data")
             _validate_payload_size(context, "context")
-            validate_inputs(session_id, actor_id, reasoning)
+            validate_inputs(session_id, actor_id, reasoning, tool_name=tool_name)
 
             # Compute hashes
             input_hash = hash_data(input_data) if input_data else ""
@@ -793,8 +793,13 @@ class SqliteStorage(StorageBackend):
                 }
             )
 
-        # Rate limiting (once for the batch)
-        await check_rate_limit(self)
+        # Rate limiting: check once per distinct actor_id in the batch
+        seen_actors: set[str] = set()
+        for rec in processed:
+            actor_id_rl = rec.get("actor_id", "unknown")
+            if actor_id_rl not in seen_actors:
+                await check_rate_limit(self, bucket_id=actor_id_rl)
+                seen_actors.add(actor_id_rl)
 
         async def _do_batch_insert():
             await self._db.execute("BEGIN IMMEDIATE")
@@ -1263,7 +1268,11 @@ class SqliteStorage(StorageBackend):
         return result
 
     async def get_chain_for_session(self, session_id: str) -> list[WitnessRecord]:
-        """Get all records for a session in order."""
+        """Get all records for a session in order. Capped at 10,000 records.
+
+        If the session has more than 10,000 records, only the first 10,000
+        are returned. Callers needing pagination should use query() directly.
+        """
         return await self.query(session_id=session_id, limit=10000)
 
     async def get_stats(self) -> ChainStats:
