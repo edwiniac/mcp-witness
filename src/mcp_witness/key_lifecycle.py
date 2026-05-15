@@ -83,7 +83,7 @@ class KeyTrustStore:
     def _load(self) -> None:
         """Load and parse the trust store JSON file."""
         try:
-            with open(self._path) as f:
+            with open(self._path) as f:  # type: ignore[arg-type]
                 data = json.load(f)
 
             self._current_key_id = data.get("current_key_id")
@@ -163,7 +163,7 @@ class KeyTrustStore:
 
         # Build a set of all keys in the chain (forward from start)
         chain_keys: set[str] = set()
-        current = self._current_key_id
+        current: Optional[str] = self._current_key_id
         while current and current in self._keys:
             chain_keys.add(current)
             current = self._keys[current].next_key_id

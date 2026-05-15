@@ -259,18 +259,14 @@ class TestStrictMerkleProof:
         from mcp_witness.merkle import verify_merkle_proof_strict
 
         tree, proof = self.make_tree(4)
-        assert verify_merkle_proof_strict(
-            proof.leaf_hash, 0, [], tree.root, tree_size=4
-        ) is False
+        assert verify_merkle_proof_strict(proof.leaf_hash, 0, [], tree.root, tree_size=4) is False
 
     def test_verify_allows_empty_proof_single_leaf(self):
         """Strict: allow empty proof for single-leaf tree."""
         from mcp_witness.merkle import verify_merkle_proof_strict
 
         tree, proof = self.make_tree(1)
-        assert verify_merkle_proof_strict(
-            proof.leaf_hash, 0, [], tree.root, tree_size=1
-        ) is True
+        assert verify_merkle_proof_strict(proof.leaf_hash, 0, [], tree.root, tree_size=1) is True
 
     def test_verify_rejects_wrong_depth(self):
         """Strict: reject proof with wrong depth for tree size."""
@@ -284,18 +280,22 @@ class TestStrictMerkleProof:
 
         # Truncate the proof to wrong depth
         wrong_path = proof.proof_path[:-1]
-        assert verify_merkle_proof_strict(
-            proof.leaf_hash, 0, wrong_path, tree.root, tree_size=4
-        ) is False
+        assert (
+            verify_merkle_proof_strict(proof.leaf_hash, 0, wrong_path, tree.root, tree_size=4)
+            is False
+        )
 
     def test_verify_rejects_negative_leaf_index(self):
         """Strict: reject negative leaf_index."""
         from mcp_witness.merkle import verify_merkle_proof_strict
 
         tree, proof = self.make_tree(2)
-        assert verify_merkle_proof_strict(
-            proof.leaf_hash, -1, proof.proof_path, tree.root, tree_size=2
-        ) is False
+        assert (
+            verify_merkle_proof_strict(
+                proof.leaf_hash, -1, proof.proof_path, tree.root, tree_size=2
+            )
+            is False
+        )
 
     def test_verify_rejects_malformed_entry(self):
         """Strict: reject proof_path with missing keys or bad position."""
@@ -305,27 +305,31 @@ class TestStrictMerkleProof:
 
         # Missing 'hash' key
         bad_path = [{"position": "left"}]
-        assert verify_merkle_proof_strict(
-            proof.leaf_hash, 0, bad_path, tree.root, tree_size=4
-        ) is False
+        assert (
+            verify_merkle_proof_strict(proof.leaf_hash, 0, bad_path, tree.root, tree_size=4)
+            is False
+        )
 
         # Missing 'position' key
         bad_path2 = [{"hash": "a" * 64}]
-        assert verify_merkle_proof_strict(
-            proof.leaf_hash, 0, bad_path2, tree.root, tree_size=4
-        ) is False
+        assert (
+            verify_merkle_proof_strict(proof.leaf_hash, 0, bad_path2, tree.root, tree_size=4)
+            is False
+        )
 
         # Invalid position value
         bad_path3 = [{"hash": "a" * 64, "position": "up"}]
-        assert verify_merkle_proof_strict(
-            proof.leaf_hash, 0, bad_path3, tree.root, tree_size=4
-        ) is False
+        assert (
+            verify_merkle_proof_strict(proof.leaf_hash, 0, bad_path3, tree.root, tree_size=4)
+            is False
+        )
 
         # Non-dict entry
         bad_path4 = ["not-a-dict"]
-        assert verify_merkle_proof_strict(
-            proof.leaf_hash, 0, bad_path4, tree.root, tree_size=4
-        ) is False
+        assert (
+            verify_merkle_proof_strict(proof.leaf_hash, 0, bad_path4, tree.root, tree_size=4)
+            is False
+        )
 
     def test_verify_strict_passes_valid(self):
         """Strict: passes for a valid proof."""
@@ -353,23 +357,32 @@ class TestStrictMerkleProof:
         tree_b, proof_b = self.make_tree(8)
 
         # Proof from tree_a against tree_b's root should fail
-        assert verify_merkle_proof_strict(
-            proof_a.leaf_hash, 0, proof_a.proof_path, tree_b.root, tree_size=4
-        ) is False
+        assert (
+            verify_merkle_proof_strict(
+                proof_a.leaf_hash, 0, proof_a.proof_path, tree_b.root, tree_size=4
+            )
+            is False
+        )
 
     def test_verify_basic_still_works(self):
         """Original verify_merkle_proof still works with malformed entries."""
         from mcp_witness.merkle import verify_merkle_proof
 
         # Original verify should now also reject malformed entries
-        assert verify_merkle_proof(
-            "leaf",
-            [{"hash": "a" * 64, "position": "left"}, {"WRONG_KEY": "x"}],
-            "some_root",
-        ) is False
+        assert (
+            verify_merkle_proof(
+                "leaf",
+                [{"hash": "a" * 64, "position": "left"}, {"WRONG_KEY": "x"}],
+                "some_root",
+            )
+            is False
+        )
 
-        assert verify_merkle_proof(
-            "leaf",
-            [{"hash": "a" * 64, "position": "invalid"}],
-            "some_root",
-        ) is False
+        assert (
+            verify_merkle_proof(
+                "leaf",
+                [{"hash": "a" * 64, "position": "invalid"}],
+                "some_root",
+            )
+            is False
+        )

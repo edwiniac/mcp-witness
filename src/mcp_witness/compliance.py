@@ -24,7 +24,7 @@ class CompliancePreset:
 
     name: str
     description: str
-    retention_days: int
+    retention_days: Optional[int]
     anchor_frequency: str  # "daily", "hourly", "per_decision"
     auto_redact: list[str] = field(default_factory=list)
     require_attestation: bool = False

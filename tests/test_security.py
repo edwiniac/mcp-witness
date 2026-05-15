@@ -598,7 +598,13 @@ class TestLogFilter:
 
         filt = SensitiveDataFilter()
         record = logging.LogRecord(
-            "test", logging.INFO, "file.py", 10, "api_key=abcdef1234567890abcdef1234567890", (), None
+            "test",
+            logging.INFO,
+            "file.py",
+            10,
+            "api_key=abcdef1234567890abcdef1234567890",
+            (),
+            None,
         )
         filt.filter(record)
         assert "[CREDENTIAL]" in record.msg
@@ -651,3 +657,186 @@ class TestLogFilter:
         filt.filter(record)
         assert "[HEX_KEY]" in record.msg
         assert "a" * 70 not in record.msg
+
+
+# =========================================================================
+# JWT Assertion Tests
+# =========================================================================
+
+
+def _make_jwt(payload: dict, privkey_bytes: bytes) -> str:
+    """Produce a minimal EdDSA JWT signed with the given Ed25519 private seed."""
+    import base64
+    import json as _json
+
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    privkey = ed25519.Ed25519PrivateKey.from_private_bytes(privkey_bytes)
+
+    def b64url(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+    header = b64url(b'{"alg":"EdDSA","typ":"JWT"}')
+    body = b64url(_json.dumps(payload).encode())
+    message = f"{header}.{body}".encode()
+    sig = privkey.sign(message)
+    return f"{header}.{body}.{b64url(sig)}"
+
+
+class TestVerifyJwtAssertion:
+    """Tests for verify_jwt_assertion() in auth.py."""
+
+    # Stable 32-byte test key seed and its hex public key
+    _SEED = bytes.fromhex("a" * 64)
+
+    @classmethod
+    def _pubkey_hex(cls) -> str:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+
+        priv = ed25519.Ed25519PrivateKey.from_private_bytes(cls._SEED)
+        pub = priv.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        return pub.hex()
+
+    def test_valid_token_returns_payload(self):
+        """A valid signed token with a future expiry returns the payload dict."""
+        import time
+
+        import mcp_witness.auth as auth_mod
+        from mcp_witness.auth import verify_jwt_assertion
+
+        now = int(time.time())
+        payload = {"sub": "test-client", "iat": now, "exp": now + 3600, "role": "auditor"}
+        token = _make_jwt(payload, self._SEED)
+
+        with patch.object(auth_mod, "MCP_WITNESS_JWT_PUBLIC_KEY", self._pubkey_hex()):
+            result = verify_jwt_assertion(token)
+
+        assert result is not None
+        assert result["sub"] == "test-client"
+        assert result["role"] == "auditor"
+
+    def test_expired_token_rejected(self):
+        """A token whose exp is in the past is rejected."""
+        import time
+
+        import mcp_witness.auth as auth_mod
+        from mcp_witness.auth import verify_jwt_assertion
+
+        now = int(time.time())
+        payload = {"sub": "x", "iat": now - 7200, "exp": now - 3600, "role": "writer"}
+        token = _make_jwt(payload, self._SEED)
+
+        with patch.object(auth_mod, "MCP_WITNESS_JWT_PUBLIC_KEY", self._pubkey_hex()):
+            result = verify_jwt_assertion(token)
+
+        assert result is None
+
+    def test_tampered_signature_rejected(self):
+        """Flipping a byte in the signature invalidates the token."""
+        import time
+
+        import mcp_witness.auth as auth_mod
+        from mcp_witness.auth import verify_jwt_assertion
+
+        now = int(time.time())
+        payload = {"sub": "x", "iat": now, "exp": now + 3600, "role": "admin"}
+        token = _make_jwt(payload, self._SEED)
+
+        # Corrupt a byte in the middle of the signature (third segment)
+        parts = token.split(".")
+        sig = list(parts[2])
+        mid = len(sig) // 2
+        sig[mid] = "A" if sig[mid] != "A" else "B"
+        parts[2] = "".join(sig)
+        bad_token = ".".join(parts)
+
+        with patch.object(auth_mod, "MCP_WITNESS_JWT_PUBLIC_KEY", self._pubkey_hex()):
+            result = verify_jwt_assertion(bad_token)
+
+        assert result is None
+
+    def test_nbf_not_yet_valid_rejected(self):
+        """A token with nbf in the future is rejected."""
+        import time
+
+        import mcp_witness.auth as auth_mod
+        from mcp_witness.auth import verify_jwt_assertion
+
+        now = int(time.time())
+        payload = {
+            "sub": "x",
+            "iat": now,
+            "nbf": now + 600,
+            "exp": now + 3600,
+            "role": "writer",
+        }
+        token = _make_jwt(payload, self._SEED)
+
+        with patch.object(auth_mod, "MCP_WITNESS_JWT_PUBLIC_KEY", self._pubkey_hex()):
+            result = verify_jwt_assertion(token)
+
+        assert result is None
+
+    def test_no_public_key_configured_returns_none(self):
+        """When MCP_WITNESS_JWT_PUBLIC_KEY is empty, JWT auth is disabled."""
+        import time
+
+        import mcp_witness.auth as auth_mod
+        from mcp_witness.auth import verify_jwt_assertion
+
+        now = int(time.time())
+        payload = {"sub": "x", "iat": now, "exp": now + 3600, "role": "admin"}
+        token = _make_jwt(payload, self._SEED)
+
+        with patch.object(auth_mod, "MCP_WITNESS_JWT_PUBLIC_KEY", ""):
+            result = verify_jwt_assertion(token)
+
+        assert result is None
+
+    def test_jwt_authenticate_returns_correct_role(self):
+        """authenticate() with a valid JWT token resolves to the JWT role."""
+        import time
+
+        import mcp_witness.auth as auth_mod
+        from mcp_witness.auth import authenticate
+
+        now = int(time.time())
+        payload = {"sub": "svc-audit", "iat": now, "exp": now + 3600, "role": "auditor"}
+        token = _make_jwt(payload, self._SEED)
+
+        with patch.object(auth_mod, "MCP_WITNESS_JWT_PUBLIC_KEY", self._pubkey_hex()):
+            with patch.dict(os.environ, {"MCP_WITNESS_API_KEY": token}, clear=True):
+                role = authenticate(token=token)
+
+        assert role == AuthRole.AUDITOR
+
+
+# =========================================================================
+# RBAC completeness: ensure witness_health, witness_search, witness_delete
+# are properly covered by the permission sets
+# =========================================================================
+
+
+class TestRBACCompleteness:
+    """Verify that all tools have correct role coverage."""
+
+    def test_witness_health_accessible_by_auditor(self):
+        """witness_health must be accessible to auditors (read-only tool)."""
+        authorize(AuthRole.AUDITOR, "witness_health")  # should not raise
+
+    def test_witness_search_accessible_by_auditor(self):
+        """witness_search must be accessible to auditors (read-only tool)."""
+        authorize(AuthRole.AUDITOR, "witness_search")  # should not raise
+
+    def test_witness_delete_accessible_by_writer(self):
+        """witness_delete must be accessible to writers (write tool)."""
+        authorize(AuthRole.WRITER, "witness_delete")  # should not raise
+
+    def test_witness_delete_not_accessible_by_auditor(self):
+        """witness_delete must NOT be accessible to auditors."""
+        with pytest.raises(PermissionError):
+            authorize(AuthRole.AUDITOR, "witness_delete")

@@ -151,7 +151,7 @@ def _parse_sig_data(signature_value: str) -> dict:
     """Parse signature value to dict if versioned, or legacy format dict."""
     fmt = detect_signature_format(signature_value)
     if fmt == "versioned":
-        return json.loads(signature_value)
+        return json.loads(signature_value)  # type: ignore[no-any-return]
     if fmt == "legacy":
         return {"algo": "ed25519+sha256:v1", "signature": signature_value.strip()}
     return {"algo": SigningAlgorithm.NONE, "signature": ""}

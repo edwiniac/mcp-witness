@@ -226,7 +226,7 @@ class BufferedStorage(StorageBackend):
         item = _BufferedRecord(kwargs=kwargs, future=future)
 
         await self._queue.put(item)
-        return await future
+        return await future  # type: ignore[no-any-return]
 
     # ------------------------------------------------------------------
     # Passthrough methods (all other StorageBackend methods)

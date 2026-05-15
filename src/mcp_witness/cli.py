@@ -462,9 +462,7 @@ def cmd_migrate(args):
         await store.connect()
 
         # Read current schema version
-        cursor = await store._db.execute(
-            "SELECT MAX(version) FROM witness_schema_version"
-        )
+        cursor = await store._db.execute("SELECT MAX(version) FROM witness_schema_version")
         row = await cursor.fetchone()
         current_version = row[0] if row and row[0] else 0
 
@@ -595,20 +593,20 @@ def cmd_jwt_sign(args=None):
 
 def cmd_sbom(args):
     """Generate SBOM (Software Bill of Materials)."""
-    import subprocess
+    import subprocess  # nosec B404 — trusted constant args only, no user input
     import sys
 
     try:
-        subprocess.run(
+        subprocess.run(  # nosec B603 — fixed args: [sys.executable, "-m", "cyclonedx_bom", ...]
             [sys.executable, "-m", "cyclonedx_bom", "-r", "-o", "sbom.json"],
             check=True,
         )
         print("✅ SBOM generated: sbom.json")
     except FileNotFoundError:
         print("⚠️  cyclonedx-bom not installed. Falling back to pip freeze.")
-        import subprocess
+        import subprocess  # nosec B404
 
-        result = subprocess.run(
+        result = subprocess.run(  # nosec B603 — fixed args: [sys.executable, "-m", "pip", "freeze"]
             [sys.executable, "-m", "pip", "freeze"],
             capture_output=True,
             text=True,
@@ -688,7 +686,7 @@ def main():
 
     # dashboard
     dash = sub.add_parser("dashboard", help="Start web dashboard")
-    dash.add_argument("--host", default="0.0.0.0", help="Listen host (default: 0.0.0.0)")
+    dash.add_argument("--host", default="127.0.0.1", help="Listen host (default: 127.0.0.1)")
     dash.add_argument("--port", type=int, help="Listen port (default: 9090)")
 
     # report
@@ -706,7 +704,9 @@ def main():
 
     # migrate
     m = sub.add_parser("migrate", help="Run database migrations")
-    m.add_argument("--dry-run", action="store_true", help="Show what would migrate without applying")
+    m.add_argument(
+        "--dry-run", action="store_true", help="Show what would migrate without applying"
+    )
     m.add_argument("--to", dest="to_version", type=int, help="Target migration version")
 
     # migrations

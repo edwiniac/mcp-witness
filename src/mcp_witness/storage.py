@@ -354,11 +354,11 @@ class SqliteStorage(StorageBackend):
         try:
             await self._db.execute("ALTER TABLE witness_records ADD COLUMN canonical_payload TEXT")
         except Exception:
-            pass
+            pass  # nosec B110 — column already exists (SQLite has no ADD COLUMN IF NOT EXISTS)
         try:
             await self._db.execute("ALTER TABLE witness_records ADD COLUMN signer_key_id TEXT")
         except Exception:
-            pass
+            pass  # nosec B110
         await self._db.commit()
 
     async def _get_last_record(self) -> Optional[dict]:
@@ -436,7 +436,7 @@ class SqliteStorage(StorageBackend):
         _validate_payload_size(input_data, "input_data")
         _validate_payload_size(output_data, "output_data")
         _validate_payload_size(context, "context")
-        validate_inputs(session_id, actor_id, reasoning)
+        validate_inputs(session_id, actor_id, reasoning, tool_name=tool_name)
 
         # Rate limiting
         await check_rate_limit(self, bucket_id=actor_id)
@@ -728,7 +728,7 @@ class SqliteStorage(StorageBackend):
             _validate_payload_size(input_data, "input_data")
             _validate_payload_size(output_data, "output_data")
             _validate_payload_size(context, "context")
-            validate_inputs(session_id, actor_id, reasoning)
+            validate_inputs(session_id, actor_id, reasoning, tool_name=tool_name)
 
             # Compute hashes
             input_hash = hash_data(input_data) if input_data else ""
@@ -793,8 +793,13 @@ class SqliteStorage(StorageBackend):
                 }
             )
 
-        # Rate limiting (once for the batch)
-        await check_rate_limit(self)
+        # Rate limiting: check once per distinct actor_id in the batch
+        seen_actors: set[str] = set()
+        for rec in processed:
+            actor_id_rl = rec.get("actor_id", "unknown")
+            if actor_id_rl not in seen_actors:
+                await check_rate_limit(self, bucket_id=actor_id_rl)
+                seen_actors.add(actor_id_rl)
 
         async def _do_batch_insert():
             await self._db.execute("BEGIN IMMEDIATE")
@@ -1015,7 +1020,7 @@ class SqliteStorage(StorageBackend):
             WHERE {where_clause}
             ORDER BY sequence ASC
             LIMIT ? OFFSET ?
-            """,
+            """,  # nosec B608 — where_clause built from validated enum values and param placeholders only
             (*params, limit, offset),
         )
         rows = await cursor.fetchall()
@@ -1082,7 +1087,8 @@ class SqliteStorage(StorageBackend):
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
         cursor = await self._db.execute(
-            f"SELECT * FROM witness_records WHERE {where_clause} ORDER BY sequence ASC", params
+            f"SELECT * FROM witness_records WHERE {where_clause} ORDER BY sequence ASC",  # nosec B608
+            params,
         )
         rows = await cursor.fetchall()
 
@@ -1255,14 +1261,18 @@ class SqliteStorage(StorageBackend):
 
                     asyncio.create_task(notify_chain_failure_slack(result))
                 except Exception:
-                    pass
+                    pass  # nosec B110 — webhook is optional; import or call failure is non-fatal
             except Exception:
                 logger.debug("Webhook notification skipped (not configured or import failed)")
 
         return result
 
     async def get_chain_for_session(self, session_id: str) -> list[WitnessRecord]:
-        """Get all records for a session in order."""
+        """Get all records for a session in order. Capped at 10,000 records.
+
+        If the session has more than 10,000 records, only the first 10,000
+        are returned. Callers needing pagination should use query() directly.
+        """
         return await self.query(session_id=session_id, limit=10000)
 
     async def get_stats(self) -> ChainStats:
@@ -1421,7 +1431,7 @@ class SqliteStorage(StorageBackend):
             try:
                 await self.anchor_checkpoint(checkpoint_id)
             except Exception:
-                pass  # Don't fail record creation if anchoring fails
+                pass  # nosec B110 — anchor failure must not break record creation
 
         return checkpoint
 
@@ -1566,7 +1576,7 @@ class SqliteStorage(StorageBackend):
             params.append(to_sequence)
 
         cursor = await self._db.execute(
-            f"SELECT * FROM witness_checkpoints WHERE {' AND '.join(conditions)} ORDER BY id",
+            f"SELECT * FROM witness_checkpoints WHERE {' AND '.join(conditions)} ORDER BY id",  # nosec B608 — conditions built from validated seq numbers only
             params,
         )
         checkpoints = await cursor.fetchall()
@@ -1582,7 +1592,7 @@ class SqliteStorage(StorageBackend):
                 )
                 # Re-query with checkpoints now available
                 cursor = await self._db.execute(
-                    f"SELECT * FROM witness_checkpoints WHERE {' AND '.join(conditions)} ORDER BY id",
+                    f"SELECT * FROM witness_checkpoints WHERE {' AND '.join(conditions)} ORDER BY id",  # nosec B608
                     params,
                 )
                 checkpoints = await cursor.fetchall()
@@ -1671,7 +1681,7 @@ class SqliteStorage(StorageBackend):
     async def anchor_checkpoint(
         self,
         checkpoint_id: int,
-        anchor_types: list[AnchorType] = None,
+        anchor_types: Optional[list[AnchorType]] = None,
     ) -> list[AnchorReceipt]:
         """
         Anchor a checkpoint to external trust sources.

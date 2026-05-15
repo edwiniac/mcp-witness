@@ -348,10 +348,8 @@ class TestPgOrgId:
         """org_id column exists in witness_records table."""
         assert pg_storage._pool is not None
         async with pg_storage._pool.acquire() as conn:
-            cols = await conn.fetch(
-                """SELECT column_name FROM information_schema.columns
-                   WHERE table_name = 'witness_records' AND column_name = 'org_id'"""
-            )
+            cols = await conn.fetch("""SELECT column_name FROM information_schema.columns
+                   WHERE table_name = 'witness_records' AND column_name = 'org_id'""")
             assert len(cols) == 1
             assert cols[0]["column_name"] == "org_id"
 

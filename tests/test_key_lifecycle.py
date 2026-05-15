@@ -106,7 +106,9 @@ class TestKeyTrustStore:
             # The chain starts from current_key_id (key-002) and follows next_key_id forward
             # key-002 has no next_key_id, so chain = {key-002}
             assert store.verify_key_chain("key-002") is True
-            assert store.verify_key_chain("key-001") is False  # key-001 is before current, not after
+            assert (
+                store.verify_key_chain("key-001") is False
+            )  # key-001 is before current, not after
         finally:
             os.unlink(path)
 
