@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any, Optional
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 
 class ActionType(str, Enum):
@@ -98,13 +98,17 @@ class WitnessRecord(BaseModel):
     # Metadata
     redacted_fields: list[str] = Field(default_factory=list)
 
-    model_config = ConfigDict(
-        json_encoders={
-            datetime: lambda v: v.isoformat(),
-            UUID: lambda v: str(v),
-            bytes: lambda v: v.hex() if v else None,
-        }
-    )
+    @model_serializer(mode="wrap")
+    def _serialize(self, serializer, _info):
+        data = serializer(self)
+        for key, value in data.items():
+            if isinstance(value, datetime):
+                data[key] = value.isoformat()
+            elif isinstance(value, UUID):
+                data[key] = str(value)
+            elif isinstance(value, bytes):
+                data[key] = value.hex() if value else None
+        return data
 
 
 class VerificationResult(BaseModel):
@@ -169,11 +173,13 @@ class Checkpoint(BaseModel):
     last_record_hash: str = Field(description="Links to main chain")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-    model_config = ConfigDict(
-        json_encoders={
-            datetime: lambda v: v.isoformat(),
-        }
-    )
+    @model_serializer(mode="wrap")
+    def _serialize(self, serializer, _info):
+        data = serializer(self)
+        for key, value in data.items():
+            if isinstance(value, datetime):
+                data[key] = value.isoformat()
+        return data
 
 
 class Anchor(BaseModel):
@@ -192,12 +198,15 @@ class Anchor(BaseModel):
     is_valid: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
 
-    model_config = ConfigDict(
-        json_encoders={
-            datetime: lambda v: v.isoformat(),
-            bytes: lambda v: v.hex() if v else None,
-        }
-    )
+    @model_serializer(mode="wrap")
+    def _serialize(self, serializer, _info):
+        data = serializer(self)
+        for key, value in data.items():
+            if isinstance(value, datetime):
+                data[key] = value.isoformat()
+            elif isinstance(value, bytes):
+                data[key] = value.hex() if value else None
+        return data
 
 
 class ProofPackage(BaseModel):

@@ -3,12 +3,21 @@ Authentication and authorization module for mcp-witness.
 
 Provides:
 - JWT assertion authentication (Ed25519-signed)
+- JWT token minting (create_jwt_token)
 - API key-based authentication (MCP_WITNESS_API_KEY env var)
 - Three-role RBAC: admin, auditor, writer
 - Tool-level permission scoping
 - Backward compatibility with deprecated READ_ONLY_MODE
+
+.. note::
+
+   mTLS is not supported because MCP uses stdio transport (no TLS layer).
+   For network deployments, use an external TLS-terminating proxy (nginx/caddy)
+   in front of the dashboard/metrics server, and rely on JWT assertions or
+   API keys for client authentication over stdio.
 """
 
+import base64
 import json
 import logging
 import os
@@ -74,8 +83,79 @@ ROLE_PERMISSIONS: dict[AuthRole, frozenset[str]] = {
 MCP_WITNESS_JWT_PUBLIC_KEY = os.getenv("MCP_WITNESS_JWT_PUBLIC_KEY", "")
 # Format: hex-encoded Ed25519 public key (64 hex chars = 32 bytes)
 
+MCP_WITNESS_JWT_PRIVATE_KEY = os.getenv("MCP_WITNESS_JWT_PRIVATE_KEY", "")
+# Format: hex-encoded Ed25519 private key (64 hex chars = 32 bytes)
+
 MCP_WITNESS_JWT_MAX_AGE = int(os.getenv("MCP_WITNESS_JWT_MAX_AGE", "3600"))
 # Maximum token age in seconds (default: 1 hour)
+
+
+def create_jwt_token(
+    subject: str,
+    role: str = "writer",
+    ttl_seconds: int = 3600,
+    private_key_hex: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Create an Ed25519-signed JWT assertion token.
+
+    Token format: base64url(header).base64url(payload).base64url(signature)
+
+    Args:
+        subject: Client identifier (stored in JWT 'sub' claim)
+        role: One of 'admin', 'auditor', 'writer'
+        ttl_seconds: Token lifetime in seconds (default 1 hour)
+        private_key_hex: 64-char hex Ed25519 private key.
+                         Defaults to ``MCP_WITNESS_JWT_PRIVATE_KEY`` env var.
+
+    Returns:
+        JWT token string, or None if no private key is configured.
+
+    Example:
+        >>> token = create_jwt_token("agent-7", role="writer", ttl_seconds=86400)
+        >>> print(token)
+        eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9...
+    """
+    sk_hex = private_key_hex or MCP_WITNESS_JWT_PRIVATE_KEY
+    if not sk_hex:
+        logger.error("Cannot create JWT: no private key configured")
+        return None
+
+    try:
+        sk_bytes = bytes.fromhex(sk_hex)
+        if len(sk_bytes) != 32:
+            logger.error("Invalid JWT private key length: %d (expected 32)", len(sk_bytes))
+            return None
+    except ValueError:
+        logger.error("Invalid JWT private key format (must be hex)")
+        return None
+
+    now = int(time.time())
+
+    header = {"alg": "EdDSA", "typ": "JWT"}
+    payload = {
+        "sub": subject,
+        "iat": now,
+        "exp": now + ttl_seconds,
+        "role": role,
+    }
+
+    def b64url_encode(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+    header_b64 = b64url_encode(json.dumps(header, separators=(",", ":")).encode())
+    payload_b64 = b64url_encode(json.dumps(payload, separators=(",", ":")).encode())
+    message = f"{header_b64}.{payload_b64}".encode()
+
+    try:
+        private_key = ed25519.Ed25519PrivateKey.from_private_bytes(sk_bytes)
+        signature = private_key.sign(message)
+    except Exception as e:
+        logger.error("Failed to sign JWT: %s", e)
+        return None
+
+    sig_b64 = b64url_encode(signature)
+    return f"{header_b64}.{payload_b64}.{sig_b64}"
 
 
 def verify_jwt_assertion(token: str) -> Optional[dict]:

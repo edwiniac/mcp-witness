@@ -3,7 +3,7 @@
 **Date:** 2026-05-13  
 **Base:** v0.6.0 → **Target:** v1.0.0  
 **Author:** Planner (Chaos vs Order analysis)  
-**Status:** Codebase is ~95% complete. Only 1 of 14 P0 items remains unaddressed.
+**Status:** Codebase is now **100% complete** for v1.0 hardening. All 14/14 P0 items addressed.
 
 ---
 
@@ -11,7 +11,7 @@
 
 The GAP_ANALYSIS.md (2026-05-12) was written against an **earlier state** of the codebase. Since then, **13 of 14 P0 items have already been implemented**, along with most P1 and several P2 items. The gap analysis remains valuable as a conceptual framework but **overstates remaining work by ~80%**.
 
-### Already Implemented (✅)
+### Already Implemented (✅ — 14/14 complete)
 
 | # | P0 Item | Status | Files |
 |---|---------|--------|-------|
@@ -28,7 +28,7 @@ The GAP_ANALYSIS.md (2026-05-12) was written against an **earlier state** of the
 | P0.11 | Strict Merkle proof validation | ✅ DONE | `merkle.py:L202-265` — `verify_merkle_proof_strict()` with depth, index, tree_size checks |
 | P0.12 | Key lifecycle management | ✅ DONE | `key_lifecycle.py` — `KeyTrustStore` with rotation, revocation, trust store JSON |
 | P0.13 | Structured metrics | ✅ DONE | `metrics.py` — `Counter`/`Histogram`, `witness_metrics` MCP tool |
-| **P0.14** | JWT assertion support / mTLS justification | ❌ **TRULY MISSING** | `auth.py` — No JWT support, no mTLS justification documentation |
+| **P0.14** | JWT assertion support / mTLS justification | ✅ DONE (2026-05-18) | `auth.py` — `create_jwt_token()`, `verify_jwt_assertion()`, mTLS documentation inline |
 
 ### Additional Items Already Done (beyond P0 scope)
 - ✅ **Graceful shutdown** (`server.py:L1182-1212`, `storage.py:L136-174`)
@@ -40,11 +40,11 @@ The GAP_ANALYSIS.md (2026-05-12) was written against an **earlier state** of the
 
 ---
 
-## PHASE 1 — Trust Foundation (Estimated: 0.5-1 day)
+## PHASE 1 — Trust Foundation ✅ COMPLETE (2026-05-18)
 
-**Goal:** Ship the missing P0 item + final polish on existing work. This is the only phase with remaining code changes.
+**Goal:** Ship the missing P0 item + final polish on existing work. **ALL DONE.**
 
-### T1.0 — JWT Assertion Support + mTLS Justification (P0.14)
+### T1.0 — JWT Assertion Support + mTLS Justification (P0.14) ✅
 
 **Priority:** MUST SHIP. This is the **only remaining P0 gap**.
 

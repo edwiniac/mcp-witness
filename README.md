@@ -4,7 +4,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![MCP](https://img.shields.io/badge/MCP-Compatible-purple.svg)](https://modelcontextprotocol.io)
-[![Version](https://img.shields.io/badge/version-0.6.0-orange.svg)](https://pypi.org/project/mcp-witness/)
+[![Version](https://img.shields.io/badge/version-0.9.0-orange.svg)](https://pypi.org/project/mcp-witness/)
 [![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 **Cryptographic proof of every AI decision.** An immutable, verifiable audit trail MCP server — because "trust me bro" isn't SOC2 compliant.
@@ -39,10 +39,10 @@ AI agents make decisions. Regulators ask questions. mcp-witness provides **crypt
 | Level | Description | Current |
 |-------|-------------|---------|
 | ASSURANCE-1 | Best-effort logging, no cryptographic guarantees | — |
-| ASSURANCE-2 | Hash chain + Merkle trees, tamper-EVIDENT, configurable anchoring | **v0.6.0** |
+| ASSURANCE-2 | Hash chain + Merkle trees, tamper-EVIDENT, configurable anchoring | **v0.9.0** |
 | ASSURANCE-3 | Non-repudiation (Ed25519), strict anchoring, encryption at rest, formal threat model | **Target: v1.0** |
 
-### ⚠️ Current Limitations (v0.6.0 → v1.0)
+### ⚠️ Current Limitations (v0.9.0 → v1.0)
 
 **Anchoring is asynchronous.** Records are created first, then anchored later when a
 checkpoint triggers `AnchorService`. Between record creation and checkpoint anchoring,
@@ -151,6 +151,7 @@ mcp-witness anchors verify ID    Verify external anchor receipts
 | `witness_proof` | Get Merkle proof for a single record |
 | `witness_backfill` | Create checkpoints for existing records |
 | `witness_configure_compliance` | Apply HIPAA/GDPR/SOX/FedRAMP/SOC2/PCI DSS preset |
+| `witness_token` | Create an Ed25519-signed JWT for client authentication |
 
 ## 🏛️ Compliance Presets
 
@@ -224,6 +225,7 @@ Single record: **O(log n)** with Merkle proof (vs O(n) linear scan).
 ## 🔒 Security
 
 - **SHA-256 hash chain** with null-byte delimiters to prevent collision attacks
+- **Ed25519 JWT assertions** — signed JSON Web Tokens as alternative to shared API keys
 - **Ed25519 record signing** — auto-generated ephemeral keys, configurable via env var
 - **HMAC key protection** — optional server-side secret makes hashes un-recomputable
 - **RFC 3161 TSA anchoring** — legal-grade timestamps (strict mode; local attestation in degraded mode)
@@ -241,13 +243,32 @@ Single record: **O(log n)** with Merkle proof (vs O(n) linear scan).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the security disclosure policy.
 
+## 🐳 Docker
+
+```bash
+# Build
+docker build -t mcp-witness .
+
+# Run MCP server (stdio)
+docker run -v witness-data:/data mcp-witness serve
+
+# Run web dashboard
+docker run -v witness-data:/data -p 9090:9090 mcp-witness dashboard
+
+# With PostgreSQL
+docker run -v witness-data:/data \
+  -e MCP_WITNESS_BACKEND=postgresql \
+  -e MCP_WITNESS_PG_URL=postgresql://user:pass@host:5432/db \
+  mcp-witness serve
+```
+
 ## 🧪 Development
 
 ```bash
 git clone https://github.com/edwiniac/mcp-witness.git
 cd mcp-witness
 pip install -e ".[dev]"
-pytest -v                    # 251 unit tests
+pytest -v                    # 343 unit tests
 pytest --ignore=tests/test_storage_pg.py  # Skip PG (needs PostgreSQL)
 ```
 
@@ -275,10 +296,14 @@ pytest --ignore=tests/test_storage_pg.py  # Skip PG (needs PostgreSQL)
 - [x] Multi-tenancy (v0.6.0)
 - [x] Webhook alerts on chain failure (v0.6.0)
 - [x] Full-text search (v0.6.0)
+- [x] Adversarial hardening — TSA strict mode, canonical signing, crypto agility, key lifecycle (v0.9.0)
+- [x] Merkle proof strict validation + envelope encryption + metrics (v0.9.0)
+- [x] PostgreSQL full backend parity + sensitive data log scrubbing (v0.9.0)
 - [ ] Streaming architecture (Kafka/NATS)
 - [ ] AWS KMS / cloud HSM signing
 - [ ] Grafana/Prometheus metrics endpoint
 - [ ] Plugin system for custom anchor providers
+- [ ] Post-quantum cryptographic algorithm support (tracking NIST PQC)
 
 ## 📄 License
 

@@ -2,6 +2,35 @@
 
 All notable changes to mcp-witness.
 
+## [0.9.0] — 2026-05-18
+
+### Adversarial Hardening (v1.0 P0 items — 13 of 14 complete)
+- **P0: TSA strict anchoring** — fail-closed on real TSA providers; no silent fallback
+- **P0: Canonicalized signing payload** — `canonicalize_record_fields()` signs full record view
+- **P0: Algorithm versioning** — `versioned_sign()` / `versioned_verify()` for Ed25519 → Ed448 → PQC migration
+- **P0: Strict Merkle proof validation** — depth, index, tree_size bounds checks
+- **P0: Key lifecycle management** — `KeyTrustStore` with rotation, revocation, trust store persistence
+- **P0: Envelope encryption at rest** — AES-256-GCM field-level encryption via `MCP_WITNESS_ENCRYPTION_KEY`
+- **P0: Sensitive data scrubbing in logs** — `SensitiveDataFilter` registered on log handlers
+- **P0: PostgreSQL full backend parity** — `search()`, `redact_record()`, `org_id` column all present
+- **P0: Hard pagination ceiling** — `MAX_QUERY_LIMIT=10000`, `MAX_OFFSET=100000` in all handlers
+- **P0: CI security gates** — SAST (bandit) + typecheck (mypy) + SBOM jobs
+- **P0: Structured metrics** — `Counter`/`Histogram`, `witness_metrics` MCP tool, metrics server
+
+### Added (since v0.6.0)
+- **Graceful shutdown** — signal handlers for SIGTERM/SIGINT
+- **Slack webhook notifier** — chain failure alerts to Slack
+- **Migration CLI** — `mcp-witness migrate` for schema upgrades
+- **Incident response runbook** — `docs/runbook.md` (413 lines)
+- **Backup/restore documentation** — `docs/backup.md` (373 lines)
+- **Metrics server** — Prometheus-compatible metrics endpoint
+
+### Fixed
+- Proper host binding (0.0.0.0 for dashboard)
+- Safe environment variable parsing (no stack trace leaks)
+- Full test coverage for new modules (330 tests passing)
+- `__init__.py` exports updated for all public modules
+
 ## [0.6.0] — 2026-05-11
 
 ### Security Hardening (Codex Audit — 20 fixes)

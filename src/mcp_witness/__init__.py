@@ -1,6 +1,6 @@
 """MCP Witness - Immutable audit trail for AI decisions."""
 
-__version__ = "0.6.0"
+__version__ = "0.9.0"
 
 from . import metrics
 from .anchoring import (
@@ -11,16 +11,27 @@ from .anchoring import (
     OpenTimestampsProvider,
     TSAProvider,
 )
-from .auth import AuthRole, authenticate, authorize, load_api_keys
+from .auth import AuthRole, authenticate, authorize, create_jwt_token, load_api_keys, verify_jwt_assertion
 from .buffered import BufferedStorage
+from .compliance import CompliancePreset, get_preset, list_presets
+from .crypto_agility import (
+    HashChainAlgorithm,
+    SigningAlgorithm,
+    detect_signature_format,
+    versioned_sign,
+    versioned_verify,
+)
 from .hasher import sign_record_hash, verify_record_signature
+from .key_lifecycle import KeyTrustStore, get_trust_store
 from .merkle import (
     MerkleProof,
     MerkleTree,
     build_merkle_tree,
     get_merkle_proof,
     verify_merkle_proof,
+    verify_merkle_proof_strict,
 )
+from .metrics import Counter, Histogram, get_metrics
 from .models import (
     ActionType,
     ActorType,
@@ -31,6 +42,7 @@ from .models import (
     VerificationResult,
     WitnessRecord,
 )
+from .security import decrypt_field, encrypt_field
 from .storage import SqliteStorage, WitnessStorage  # WitnessStorage is alias for SqliteStorage
 from .storage_base import StorageBackend
 
@@ -52,8 +64,6 @@ def _load_pg_storage():
 
 
 __all__ = [
-    # Metrics
-    "metrics",
     # Version
     "__version__",
     # Auth / RBAC
@@ -61,12 +71,27 @@ __all__ = [
     "authenticate",
     "authorize",
     "load_api_keys",
+    "create_jwt_token",
+    "verify_jwt_assertion",
+    # Crypto agility
+    "SigningAlgorithm",
+    "HashChainAlgorithm",
+    "versioned_sign",
+    "versioned_verify",
+    "detect_signature_format",
+    # Key lifecycle
+    "KeyTrustStore",
+    "get_trust_store",
+    # Compliance
+    "CompliancePreset",
+    "get_preset",
+    "list_presets",
     # Models
     "ActionType",
     "ActorType",
     "Anchor",
-    "Checkpoint",
     "ChainStats",
+    "Checkpoint",
     "Sensitivity",
     "VerificationResult",
     "WitnessRecord",
@@ -83,9 +108,18 @@ __all__ = [
     "build_merkle_tree",
     "get_merkle_proof",
     "verify_merkle_proof",
+    "verify_merkle_proof_strict",
     # Signing / Non-repudiation
     "sign_record_hash",
     "verify_record_signature",
+    # Envelope encryption
+    "encrypt_field",
+    "decrypt_field",
+    # Metrics
+    "Counter",
+    "Histogram",
+    "get_metrics",
+    "metrics",
     # Anchoring
     "AnchorService",
     "AnchorReceipt",
