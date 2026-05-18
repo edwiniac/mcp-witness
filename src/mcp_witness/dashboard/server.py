@@ -137,7 +137,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         logger.debug("HTTP %s", format % args)
 
 
-def run_dashboard(host="0.0.0.0", port=None):
+def run_dashboard(host="127.0.0.1", port=None):
     """Start the dashboard HTTP server."""
     if port is None:
         port = DEFAULT_PORT

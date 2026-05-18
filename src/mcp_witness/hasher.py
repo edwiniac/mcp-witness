@@ -241,7 +241,7 @@ def sign_record_hash(record_hash: str, signing_key) -> str:
     """
     data = record_hash.encode("utf-8")
     signature = signing_key.sign(data)
-    return signature.hex()
+    return signature.hex()  # type: ignore[no-any-return]
 
 
 def verify_record_signature(

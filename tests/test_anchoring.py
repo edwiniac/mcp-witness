@@ -653,9 +653,7 @@ class TestAnchorStrictMode:
 
         from mcp_witness.anchoring import AnchorService
 
-        with patch.dict(
-            "os.environ", {"MCP_WITNESS_ANCHOR_STRICT": "false"}, clear=False
-        ):
+        with patch.dict("os.environ", {"MCP_WITNESS_ANCHOR_STRICT": "false"}, clear=False):
             import importlib
 
             import mcp_witness.security
@@ -663,15 +661,11 @@ class TestAnchorStrictMode:
             importlib.reload(mcp_witness.security)
 
             service = AnchorService()
-            provider = TSAProvider(
-                tsa_url="https://nonexistent-tsa.example.com/tsr", timeout=0.1
-            )
+            provider = TSAProvider(tsa_url="https://nonexistent-tsa.example.com/tsr", timeout=0.1)
             service.add_provider(provider)
 
             # Should not raise, should return empty receipts list (since all providers fail)
-            receipts = await service.anchor(
-                "a" * 64, {}, anchor_types=[AnchorType.TSA]
-            )
+            receipts = await service.anchor("a" * 64, {}, anchor_types=[AnchorType.TSA])
             # In non-strict mode, partial results (possibly empty) are returned
             assert isinstance(receipts, list)
 

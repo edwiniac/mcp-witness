@@ -67,6 +67,12 @@ def get_data_encryption_key() -> bytes:
             raise ValueError("MCP_WITNESS_DEK must be 32 bytes (64 hex chars)")
     else:
         _DEK = AESGCM.generate_key(bit_length=256)
+        logger.warning(
+            "MCP_WITNESS_DEK not set — using EPHEMERAL encryption key. "
+            "Sensitive fields encrypted this session CANNOT be decrypted after restart. "
+            "Set MCP_WITNESS_DEK to a persistent 32-byte hex key (openssl rand -hex 32) "
+            "for durable field-level encryption."
+        )
     return _DEK
 
 
@@ -105,9 +111,20 @@ def decrypt_field(encrypted: str) -> str:
 
 
 _SENSITIVE_FIELD_PATTERNS = {
-    "email", "phone", "ssn", "dob", "address", "name",
-    "creditcard", "bankaccount", "medicalrecord", "patientid",
-    "apikey", "password", "secret", "token",
+    "email",
+    "phone",
+    "ssn",
+    "dob",
+    "address",
+    "name",
+    "creditcard",
+    "bankaccount",
+    "medicalrecord",
+    "patientid",
+    "apikey",
+    "password",
+    "secret",
+    "token",
 }
 
 
@@ -147,7 +164,7 @@ def get_hmac_key() -> Optional[bytes]:
     """
     global _hmac_key
     if _hmac_key is not _HMAC_KEY_UNSET:
-        return _hmac_key
+        return _hmac_key  # type: ignore[return-value]
 
     env_key = os.getenv("MCP_WITNESS_HMAC_KEY", "").strip()
     if env_key:
@@ -193,7 +210,7 @@ async def check_rate_limit(
         max_tokens: Maximum tokens the bucket can hold.
         refill_rate: Tokens added per second.
     """
-    allowed = await storage.check_rate_limit(  # type: ignore[union-attr]
+    allowed = await storage.check_rate_limit(  # type: ignore[attr-defined]
         bucket_id=bucket_id,
         max_tokens=max_tokens,
         refill_rate=refill_rate,
@@ -321,7 +338,7 @@ def get_signing_key() -> Optional[object]:
                     current_key_id,
                 )
     except Exception:
-        pass
+        pass  # nosec B110 — key resolution failure is non-fatal; signing degrades gracefully
 
     return _signing_key
 
@@ -408,7 +425,7 @@ async def check_idempotency(
     Returns True if this is a NEW payload (allow it),
     False if it's a duplicate (reject it).
     """
-    return await storage.check_and_record_nonce(  # type: ignore[union-attr]
+    return await storage.check_and_record_nonce(  # type: ignore[attr-defined, no-any-return]
         nonce_hash=nonce_hash,
         ttl_seconds=ttl_seconds,
     )
@@ -473,8 +490,10 @@ def validate_export_path(output_path: str) -> Path:
 # ---------------------------------------------------------------------------
 
 SESSION_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_\-:.]*$")
+TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_\-:.]*$")
 MAX_SESSION_ID_LENGTH = 256
 MAX_ACTOR_ID_LENGTH = 256
+MAX_TOOL_NAME_LENGTH = 256
 MAX_REASONING_LENGTH = 10000  # 10KB of reasoning text
 
 
@@ -482,6 +501,7 @@ def validate_inputs(
     session_id: str = "",
     actor_id: str = "unknown",
     reasoning: Optional[str] = None,
+    tool_name: Optional[str] = None,
 ) -> None:
     """
     Validate all user-supplied string inputs.
@@ -495,6 +515,12 @@ def validate_inputs(
 
     if actor_id and len(actor_id) > MAX_ACTOR_ID_LENGTH:
         raise ValueError(f"actor_id exceeds max length {MAX_ACTOR_ID_LENGTH}")
+
+    if tool_name is not None:
+        if len(tool_name) > MAX_TOOL_NAME_LENGTH:
+            raise ValueError(f"tool_name exceeds max length {MAX_TOOL_NAME_LENGTH}")
+        if tool_name and not TOOL_NAME_PATTERN.match(tool_name):
+            raise ValueError("tool_name contains invalid characters")
 
     if reasoning and len(reasoning) > MAX_REASONING_LENGTH:
         raise ValueError(f"reasoning exceeds max length {MAX_REASONING_LENGTH}")

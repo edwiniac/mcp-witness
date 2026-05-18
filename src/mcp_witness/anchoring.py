@@ -303,8 +303,8 @@ class TSAProvider(AnchorProvider):
 
     DEFAULT_TSA_URL = "https://freetsa.org/tsr"
 
-    def __init__(self, tsa_url: str = None, timeout: float = 30.0):
-        self.tsa_url = tsa_url or os.getenv("TSA_URL", self.DEFAULT_TSA_URL)
+    def __init__(self, tsa_url: Optional[str] = None, timeout: float = 30.0):
+        self.tsa_url: str = tsa_url or os.getenv("TSA_URL") or self.DEFAULT_TSA_URL
         self.timeout = timeout
 
     @property
@@ -447,7 +447,7 @@ class TSAProvider(AnchorProvider):
                 result = data.get("merkle_root") == receipt.merkle_root
                 if not result:
                     _metrics.anchor_verification_failures.inc()
-                return result
+                return result  # type: ignore[no-any-return]
             except (json.JSONDecodeError, UnicodeDecodeError):
                 _metrics.anchor_verification_failures.inc()
                 return False
@@ -456,7 +456,7 @@ class TSAProvider(AnchorProvider):
         result = self._validate_der_receipt(receipt.raw_receipt)
         if not result:
             _metrics.anchor_verification_failures.inc()
-        return result
+        return result  # type: ignore[no-any-return]
 
 
 class OpenTimestampsProvider(AnchorProvider):
@@ -520,7 +520,7 @@ class OpenTimestampsProvider(AnchorProvider):
                             },
                         )
                 except Exception:
-                    continue
+                    continue  # nosec B112 — inner loop; one TSA failure tries next server
 
         # All servers failed
         logger.error(
@@ -659,7 +659,12 @@ class IPFSProvider(AnchorProvider):
     Free, but doesn't provide timestamps (combine with TSA).
     """
 
-    def __init__(self, api_key: str = None, api_secret: str = None, timeout: float = 30.0):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        api_secret: Optional[str] = None,
+        timeout: float = 30.0,
+    ):
         self.api_key = api_key or os.getenv("PINATA_API_KEY")
         self.api_secret = api_secret or os.getenv("PINATA_API_SECRET")
         self.timeout = timeout
@@ -709,14 +714,18 @@ class IPFSProvider(AnchorProvider):
                     "pinataMetadata": {"name": f"mcp-witness-{data['merkle_root'][:8]}"},
                 },
                 headers={
-                    "pinata_api_key": self.api_key,
-                    "pinata_secret_api_key": self.api_secret,
-                    "Content-Type": "application/json",
+                    k: v
+                    for k, v in {
+                        "pinata_api_key": self.api_key,
+                        "pinata_secret_api_key": self.api_secret,
+                        "Content-Type": "application/json",
+                    }.items()
+                    if v is not None
                 },
             )
 
             if response.status_code == 200:
-                return response.json()["IpfsHash"]
+                return response.json()["IpfsHash"]  # type: ignore[no-any-return]
             else:
                 raise Exception(f"Pinata returned {response.status_code}")
 
@@ -803,7 +812,7 @@ class AnchorService:
     Anchors Merkle roots to multiple external sources for redundancy.
     """
 
-    def __init__(self, providers: list[AnchorProvider] = None):
+    def __init__(self, providers: Optional[list[AnchorProvider]] = None):
         """
         Initialize with providers.
 
@@ -828,8 +837,8 @@ class AnchorService:
     async def anchor(
         self,
         merkle_root: str,
-        metadata: dict = None,
-        anchor_types: list[AnchorType] = None,
+        metadata: Optional[dict] = None,
+        anchor_types: Optional[list[AnchorType]] = None,
     ) -> list[AnchorReceipt]:
         """
         Anchor a Merkle root to configured providers.
@@ -859,20 +868,18 @@ class AnchorService:
         tasks = [p.anchor(merkle_root, metadata) for p in providers]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        receipts = []
+        receipts: list[AnchorReceipt] = []
         errors = []
 
         for provider, result in zip(providers, results):
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 errors.append({"provider": provider.name, "error": str(result)})
             else:
                 receipts.append(result)
 
         # In strict mode, fail closed if any provider errored
         if strict and errors:
-            failure_detail = "; ".join(
-                f"{e['provider']}: {e['error']}" for e in errors
-            )
+            failure_detail = "; ".join(f"{e['provider']}: {e['error']}" for e in errors)
             raise AnchorFailureError(
                 f"Anchoring failed in strict mode: {failure_detail}",
                 failures=errors,

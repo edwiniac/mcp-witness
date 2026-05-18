@@ -74,7 +74,7 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) ->
             writer.close()
             await writer.wait_closed()
         except Exception:
-            pass
+            pass  # nosec B110 — best-effort cleanup; writer.close() failures are non-actionable
 
 
 async def start_metrics_server(

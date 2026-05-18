@@ -705,7 +705,7 @@ async def handle_attest(store: StorageBackend, args: dict) -> dict:
                 "note": "Ensure TSA is reachable or disable strict mode with MCP_WITNESS_ANCHOR_STRICT=false",
             }
 
-        if receipt:
+        if receipt and receipt.raw_receipt:
             await store.update_attestation(
                 record_id=record_id,
                 tsa_receipt=receipt.raw_receipt,
@@ -738,7 +738,7 @@ async def handle_attest(store: StorageBackend, args: dict) -> dict:
                     anchor_types=[AnchorType.TSA],
                 )
                 receipt = receipts[0] if receipts else None
-                if receipt:
+                if receipt and receipt.raw_receipt:
                     await store.update_attestation(
                         record_id=str(record.id),
                         tsa_receipt=receipt.raw_receipt,
@@ -1066,7 +1066,7 @@ async def handle_health(store: StorageBackend) -> dict:
         stats = await store.get_stats()
         db_ok = True
     except Exception:
-        pass
+        pass  # nosec B110 — health check; DB failure is surfaced via db_ok flag
 
     # Anchor stats
     try:
@@ -1171,7 +1171,7 @@ async def handle_delete(store: StorageBackend, args: dict) -> dict:
             "Data fields are nulled; hash chain integrity is preserved.",
         }
     except Exception as e:
-        return {"error": str(e)}
+        return sanitize_error(e)
 
 
 async def handle_search(store: StorageBackend, args: dict) -> dict:
@@ -1219,7 +1219,7 @@ async def handle_search(store: StorageBackend, args: dict) -> dict:
             ],
         }
     except Exception as e:
-        return {"error": str(e)}
+        return sanitize_error(e)
 
 
 async def _handle_shutdown(sig: signal.Signals) -> None:
@@ -1233,6 +1233,8 @@ async def _handle_shutdown(sig: signal.Signals) -> None:
     logger.info("Received signal %s, shutting down gracefully", sig_name)
 
     # Wait for in-flight writes
+    if storage is None:
+        return
     deadline = time.monotonic() + SHUTDOWN_TIMEOUT
     while time.monotonic() < deadline:
         if not await storage.has_inflight_writes():
