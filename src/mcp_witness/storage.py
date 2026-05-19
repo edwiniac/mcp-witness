@@ -172,7 +172,8 @@ class SqliteStorage(StorageBackend):
 
     async def has_inflight_writes(self) -> bool:
         """Check if there are any in-flight write transactions."""
-        return self._active_transactions > 0
+        async with self._transaction_lock:
+            return self._active_transactions > 0
 
     async def close(self) -> None:
         """Close the database connection."""
@@ -1036,9 +1037,7 @@ class SqliteStorage(StorageBackend):
         """Search records using LIKE pattern matching.
 
         Searches across reasoning, input_data, and output_data fields.
-        SQLite does not have full-text search without the FTS5 extension,
-        so this falls back to LIKE-based matching on the reasoning field
-        (the most searchable text field).
+        Consider FTS5 for production-scale usage.
 
         Args:
             query: Search string (used with LIKE '%query%')

@@ -16,12 +16,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_PORT = int(os.getenv("MCP_WITNESS_DASHBOARD_PORT", "9090"))
 DASHBOARD_DIR = Path(__file__).parent
 
+# Configurable CORS origin (empty string = no CORS header sent)
+DASHBOARD_CORS_ORIGIN = os.getenv("MCP_WITNESS_DASHBOARD_ORIGIN", "").strip()
+
 
 class DashboardHandler(SimpleHTTPRequestHandler):
     """HTTP handler that serves the dashboard and API."""
 
     def __init__(self, *args, **kwargs):
-        # Serve files from the dashboard directory
         super().__init__(*args, directory=str(DASHBOARD_DIR), **kwargs)
 
     def do_GET(self):
@@ -34,48 +36,54 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             super().do_GET()
 
     def handle_api(self):
-        """Serve dashboard data as JSON."""
+        """Serve dashboard data as JSON.
+
+        Uses a single connect/close boundary — no nested asyncio.run loops.
+        """
+        import asyncio
+
         try:
-            from ..storage import WitnessStorage
+            from ..storage import SqliteStorage
 
             db_path = os.getenv(
                 "MCP_WITNESS_DB",
                 "~/.mcp-witness/witness.db",
             )
-            store = WitnessStorage(Path(db_path).expanduser())
+            store = SqliteStorage(Path(db_path).expanduser())
 
-            import asyncio
-
-            async def _get_data():
-                await store.connect()
-                try:
-                    return self._get_dashboard_data(store)
-                finally:
-                    await store.close()
-
-            data = asyncio.run(_get_data())
+            data = asyncio.run(_load_dashboard(store))
             self._send_json(data)
-        except Exception as e:
-            logger.warning("Dashboard API error: %s", e)
-            self._send_json({"error": str(e)}, status=500)
+        except Exception:
+            logger.exception("Dashboard API error")
+            self._send_json({"error": "internal_error"}, status=500)
 
-    def _get_dashboard_data(self, store):
-        """Extract dashboard statistics from the witness database."""
-        import asyncio
+    def _send_json(self, data, status=200):
+        """Send a JSON response with security headers."""
+        body = json.dumps(data, indent=2, default=str).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
+        if DASHBOARD_CORS_ORIGIN:
+            self.send_header("Access-Control-Allow-Origin", DASHBOARD_CORS_ORIGIN)
+        self.end_headers()
+        self.wfile.write(body)
 
-        async def _load():
-            await store.connect()
-            try:
-                stats = await store.get_stats()
-                anchor_stats = await store.get_anchor_stats()
-                checkpoints = await store.list_checkpoints(limit=5)
-                records = await store.query(limit=20)
-                verification = await store.verify_chain_fast()
-                return stats, anchor_stats, checkpoints, records, verification
-            finally:
-                await store.close()
+    def log_message(self, format, *args):
+        """Use structured logging if configured, else default."""
+        logger.debug("HTTP %s", format % args)
 
-        stats, anchor_stats, checkpoints, records, verification = asyncio.run(_load())
+
+async def _load_dashboard(store) -> dict:
+    """Load all dashboard data within a single connect/close boundary."""
+    await store.connect()
+    try:
+        stats = await store.get_stats()
+        anchor_stats = await store.get_anchor_stats()
+        checkpoints = await store.list_checkpoints(limit=5)
+        records = await store.query(limit=20)
+        verification = await store.verify_chain_fast()
 
         return {
             "total_records": stats.total_records,
@@ -83,9 +91,15 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             "unique_sessions": stats.unique_sessions,
             "unique_actors": stats.unique_actors,
             "first_record": (
-                stats.first_record_time.isoformat() if stats.first_record_time else None
+                stats.first_record_time.isoformat()
+                if stats.first_record_time
+                else None
             ),
-            "last_record": stats.last_record_time.isoformat() if stats.last_record_time else None,
+            "last_record": (
+                stats.last_record_time.isoformat()
+                if stats.last_record_time
+                else None
+            ),
             "attested_records": stats.attested_records,
             "actions_by_type": stats.records_by_action_type,
             "sensitivity_levels": stats.records_by_sensitivity,
@@ -121,20 +135,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "issues": verification.issues,
             },
         }
-
-    def _send_json(self, data, status=200):
-        """Send a JSON response."""
-        body = json.dumps(data, indent=2, default=str).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, format, *args):
-        """Use structured logging if configured, else default."""
-        logger.debug("HTTP %s", format % args)
+    finally:
+        await store.close()
 
 
 def run_dashboard(host="127.0.0.1", port=None):

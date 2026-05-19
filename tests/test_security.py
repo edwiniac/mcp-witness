@@ -98,10 +98,12 @@ class TestAuthenticate:
     """Tests for authenticate()."""
 
     def test_open_mode_none(self):
-        """No API keys configured → returns None (admin/open mode)."""
-        with patch.dict(os.environ, {}, clear=True):
-            role = authenticate()
-        assert role is None
+        """No API keys configured → deny by default (v1.0 hardened)."""
+        with patch.dict(os.environ, {}, clear=True), patch(
+            "mcp_witness.auth.DEFAULT_ACCESS_MODE", "deny"
+        ):
+            with pytest.raises(PermissionError, match="not configured"):
+                authenticate()
 
     def test_with_valid_key_admin(self):
         """Valid admin key → returns AuthRole.ADMIN."""
@@ -143,7 +145,7 @@ class TestAuthenticate:
         assert role == AuthRole.WRITER
 
     def test_invalid_key_returns_auditor(self):
-        """Invalid key with API_KEYS configured → auditor (anonymous)."""
+        """Invalid key with API_KEYS configured → raises (auth required, v1.0 hardened)."""
         with patch.dict(
             os.environ,
             {
@@ -152,11 +154,11 @@ class TestAuthenticate:
             },
             clear=True,
         ):
-            role = authenticate()
-        assert role == AuthRole.AUDITOR
+            with pytest.raises(PermissionError, match="Authentication required"):
+                authenticate()
 
     def test_no_key_returns_auditor(self):
-        """No API_KEY provided with keys configured → auditor."""
+        """No API_KEY provided with keys configured → raises (auth required, v1.0 hardened)."""
         with patch.dict(
             os.environ,
             {
@@ -164,8 +166,8 @@ class TestAuthenticate:
             },
             clear=True,
         ):
-            role = authenticate()
-        assert role == AuthRole.AUDITOR
+            with pytest.raises(PermissionError, match="Authentication required"):
+                authenticate()
 
     def test_anon_writer_flag(self):
         """MCP_WITNESS_ALLOW_ANON_WRITES=true → writer for anonymous."""
@@ -181,16 +183,18 @@ class TestAuthenticate:
         assert role == AuthRole.WRITER
 
     def test_deprecated_read_only(self):
-        """READ_ONLY_MODE without keys → auditor (with deprecation path)."""
+        """READ_ONLY_MODE without keys → deny by default (explicit opt-in needed)."""
         with patch.dict(
             os.environ,
             {
                 "MCP_WITNESS_READ_ONLY": "true",
             },
             clear=True,
+        ), patch(
+            "mcp_witness.auth.DEFAULT_ACCESS_MODE", "deny"
         ):
-            role = authenticate()
-        assert role == AuthRole.AUDITOR
+            with pytest.raises(PermissionError, match="not configured"):
+                authenticate()
 
     def test_read_only_with_keys(self):
         """READ_ONLY_MODE with keys → still auths correctly."""
@@ -281,10 +285,9 @@ class TestAuthorize:
                 authorize(AuthRole.WRITER, tool)
 
     def test_none_role_open_mode(self):
-        """None role (open mode) has full access."""
-        authorize(None, "witness_record")  # Should not raise
-        authorize(None, "witness_verify")  # Should not raise
-        authorize(None, "witness_backfill")  # Should not raise
+        """None role raises PermissionError (must have concrete role, v1.0 hardened)."""
+        with pytest.raises(PermissionError, match="no role assigned"):
+            authorize(None, "witness_record")
 
     def test_unknown_tool_auditor(self):
         """Unknown tool raises PermissionError for auditor."""
@@ -301,25 +304,24 @@ class TestBackwardCompat:
     """Tests for backward compatibility scenarios."""
 
     def test_no_api_keys_full_access(self):
-        """No MCP_WITNESS_API_KEYS = open mode (admin for all)."""
-        with patch.dict(os.environ, {}, clear=True):
-            role = authenticate()
-            assert role is None  # None = full access
-            # authorize(None, ...) should pass for all tools
-            authorize(None, "witness_record")
-            authorize(None, "witness_verify")
+        """No MCP_WITNESS_API_KEYS → deny by default (v1.0 hardened)."""
+        with patch.dict(os.environ, {}, clear=True), patch(
+            "mcp_witness.auth.DEFAULT_ACCESS_MODE", "deny"
+        ):
+            with pytest.raises(PermissionError, match="not configured"):
+                authenticate()
 
     def test_enforce_read_only_deprecated(self):
-        """Old enforce_read_only still works but warns."""
+        """Old enforce_read_only raised when deny-by-default is active."""
         from mcp_witness.security import enforce_read_only
 
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(os.environ, {}, clear=True), patch(
+            "mcp_witness.auth.DEFAULT_ACCESS_MODE", "deny"
+        ):
             with warnings.catch_warnings(record=True):
                 warnings.simplefilter("always")
-                # In open mode, read tool should pass
-                enforce_read_only("witness_verify")
-                # Only write tools would be blocked if auditor
-                # Since open mode, all pass
+                with pytest.raises(PermissionError):
+                    enforce_read_only("witness_verify")
 
     def test_backward_compat_imports(self):
         """Old imports from security still work."""

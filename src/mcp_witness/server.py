@@ -41,6 +41,7 @@ server = Server("mcp-witness")
 
 # Global storage instance (initialized on startup)
 storage: Optional[StorageBackend] = None
+_storage_lock = asyncio.Lock()
 
 # Pagination ceilings
 MAX_QUERY_LIMIT = 10000
@@ -93,12 +94,20 @@ def _create_storage() -> StorageBackend:
 
 
 async def get_storage() -> StorageBackend:
-    """Get or create the storage instance (lazy singleton)."""
+    """Get or create the storage instance (lazy singleton with lock).
+
+    Uses double-checked locking to prevent races during concurrent
+    first-connection from multiple asyncio tasks.
+    """
     global storage
-    if storage is None:
-        storage = _create_storage()
-        await storage.connect()
-    return storage
+    if storage is not None:
+        return storage
+    async with _storage_lock:
+        if storage is None:
+            s = _create_storage()
+            await s.connect()
+            storage = s
+        return storage
 
 
 @server.list_tools()
@@ -458,64 +467,60 @@ async def list_tools() -> list[Tool]:
     ]
 
 
+# ── Tool handler registry ──────────────────────────────────────────────
+# Replaces the giant if/elif chain. Register handlers by tool name.
+
+_TOOL_HANDLERS: dict[str, callable] = {}
+
+
+def _register(name: str):
+    """Decorator: register a tool handler by name."""
+    def decorator(handler: callable) -> callable:
+        _TOOL_HANDLERS[name] = handler
+        return handler
+    return decorator
+
+
 @server.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    """Handle tool calls."""
+async def call_tool(name: str, arguments: object) -> list[TextContent]:
+    """Handle tool calls via registry dispatch.
+
+    All arguments are runtime-validated before reaching handlers.
+    """
     try:
+        # Strict argument type validation
+        if not isinstance(arguments, dict):
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({"error": "Tool arguments must be a JSON object"}),
+                )
+            ]
+
         # Authenticate and authorize
         role = authenticate()
         authorize(role, name)
 
         store = await get_storage()
 
-        if name == "witness_record":
-            result = await handle_record(store, arguments)
-        elif name == "witness_verify":
-            result = await handle_verify(store, arguments)
-        elif name == "witness_query":
-            result = await handle_query(store, arguments)
-        elif name == "witness_chain":
-            result = await handle_chain(store, arguments)
-        elif name == "witness_stats":
-            result = await handle_stats(store)
-        elif name == "witness_attest":
-            result = await handle_attest(store, arguments)
-        elif name == "witness_export":
-            result = await handle_export(store, arguments)
-        # New checkpoint and anchoring tools
-        elif name == "witness_checkpoints":
-            result = await handle_checkpoints(store, arguments)
-        elif name == "witness_verify_fast":
-            result = await handle_verify_fast(store, arguments)
-        elif name == "witness_anchor":
-            result = await handle_anchor(store, arguments)
-        elif name == "witness_verify_anchors":
-            result = await handle_verify_anchors(store, arguments)
-        elif name == "witness_proof":
-            result = await handle_proof(store, arguments)
-        elif name == "witness_backfill":
-            result = await handle_backfill(store)
-        elif name == "witness_configure_compliance":
-            result = await handle_compliance(store, arguments)
-        elif name == "witness_health":
-            result = await handle_health(store)
-        elif name == "witness_delete":
-            result = await handle_delete(store, arguments)
-        elif name == "witness_search":
-            result = await handle_search(store, arguments)
-        elif name == "witness_metrics":
-            result = _metrics.get_metrics()
-        else:
-            result = {"error": f"Unknown tool: {name}"}
+        handler = _TOOL_HANDLERS.get(name)
+        if handler is None:
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({"error": f"Unknown tool: {name}"}),
+                )
+            ]
 
+        result = await handler(store, arguments)
         return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
     except Exception as e:
-        # Sanitize errors: never leak stack traces to the client
         safe = sanitize_error(e)
         return [TextContent(type="text", text=json.dumps(safe, indent=2))]
 
 
+@_register("witness_record")
 async def handle_record(store: StorageBackend, args: dict) -> dict:
     """Handle witness_record tool call."""
     action_type = ActionType(args["action_type"])
@@ -546,6 +551,7 @@ async def handle_record(store: StorageBackend, args: dict) -> dict:
     }
 
 
+@_register("witness_verify")
 async def handle_verify(store: StorageBackend, args: dict) -> dict:
     """Handle witness_verify tool call."""
     from_seq = args.get("from_sequence")
@@ -567,6 +573,7 @@ async def handle_verify(store: StorageBackend, args: dict) -> dict:
     }
 
 
+@_register("witness_query")
 async def handle_query(store: StorageBackend, args: dict) -> dict:
     """Handle witness_query tool call."""
     from_time = None
@@ -616,6 +623,7 @@ async def handle_query(store: StorageBackend, args: dict) -> dict:
     }
 
 
+@_register("witness_chain")
 async def handle_chain(store: StorageBackend, args: dict) -> dict:
     """Handle witness_chain tool call."""
     session_id = args.get("session_id")
@@ -649,6 +657,7 @@ async def handle_chain(store: StorageBackend, args: dict) -> dict:
     }
 
 
+@_register("witness_stats")
 async def handle_stats(store: StorageBackend) -> dict:
     """Handle witness_stats tool call."""
     stats = await store.get_stats()
@@ -675,6 +684,7 @@ async def handle_stats(store: StorageBackend) -> dict:
     }
 
 
+@_register("witness_attest")
 async def handle_attest(store: StorageBackend, args: dict) -> dict:
     """Handle witness_attest tool call — uses real RFC 3161 TSA when available."""
     from .anchoring import AnchorService, AnchorType, TSAProvider
@@ -760,6 +770,7 @@ async def handle_attest(store: StorageBackend, args: dict) -> dict:
     return {"error": "Specify record_id or set batch=true"}
 
 
+@_register("witness_export")
 async def handle_export(store: StorageBackend, args: dict) -> dict:
     """Handle witness_export tool call."""
     from_time = None
@@ -874,6 +885,7 @@ async def handle_export(store: StorageBackend, args: dict) -> dict:
 # =========================================================================
 
 
+@_register("witness_checkpoints")
 async def handle_checkpoints(store: StorageBackend, args: dict) -> dict:
     """Handle witness_checkpoints tool call."""
     limit = min(args.get("limit", 20), MAX_QUERY_LIMIT)
@@ -895,6 +907,7 @@ async def handle_checkpoints(store: StorageBackend, args: dict) -> dict:
     }
 
 
+@_register("witness_verify_fast")
 async def handle_verify_fast(store: StorageBackend, args: dict) -> dict:
     """Handle witness_verify_fast tool call."""
     from_seq = args.get("from_sequence")
@@ -916,6 +929,7 @@ async def handle_verify_fast(store: StorageBackend, args: dict) -> dict:
     }
 
 
+@_register("witness_anchor")
 async def handle_anchor(store: StorageBackend, args: dict) -> dict:
     """Handle witness_anchor tool call."""
     from .anchoring import AnchorFailureError, AnchorType
@@ -957,6 +971,7 @@ async def handle_anchor(store: StorageBackend, args: dict) -> dict:
         }
 
 
+@_register("witness_verify_anchors")
 async def handle_verify_anchors(store: StorageBackend, args: dict) -> dict:
     """Handle witness_verify_anchors tool call."""
     checkpoint_id = args.get("checkpoint_id")
@@ -978,6 +993,7 @@ async def handle_verify_anchors(store: StorageBackend, args: dict) -> dict:
     }
 
 
+@_register("witness_proof")
 async def handle_proof(store: StorageBackend, args: dict) -> dict:
     """Handle witness_proof tool call."""
     sequence = args.get("sequence")
@@ -992,6 +1008,7 @@ async def handle_proof(store: StorageBackend, args: dict) -> dict:
     return proof
 
 
+@_register("witness_backfill")
 async def handle_backfill(store: StorageBackend) -> dict:
     """Handle witness_backfill tool call."""
     checkpoints_created = await store.backfill_checkpoints()
@@ -1006,6 +1023,7 @@ async def handle_backfill(store: StorageBackend) -> dict:
     }
 
 
+@_register("witness_configure_compliance")
 async def handle_compliance(store: StorageBackend, args: dict) -> dict:
     """Handle witness_configure_compliance tool call."""
     from .compliance import get_preset, get_preset_summary
@@ -1047,6 +1065,7 @@ async def handle_compliance(store: StorageBackend, args: dict) -> dict:
     }
 
 
+@_register("witness_health")
 async def handle_health(store: StorageBackend) -> dict:
     """Handle witness_health tool call.
 
@@ -1129,6 +1148,7 @@ async def handle_health(store: StorageBackend) -> dict:
     }
 
 
+@_register("witness_delete")
 async def handle_delete(store: StorageBackend, args: dict) -> dict:
     """Handle witness_delete tool call (GDPR right to erasure).
 
@@ -1174,6 +1194,13 @@ async def handle_delete(store: StorageBackend, args: dict) -> dict:
         return sanitize_error(e)
 
 
+@_register("witness_metrics")
+async def handle_metrics(_store: StorageBackend, _args: dict) -> dict:
+    """Handle witness_metrics tool call."""
+    return _metrics.get_metrics()
+
+
+@_register("witness_search")
 async def handle_search(store: StorageBackend, args: dict) -> dict:
     """Handle witness_search tool call.
 
@@ -1250,6 +1277,11 @@ async def main():
     """Run the MCP server."""
     global storage
     storage = _create_storage()
+
+    # Verify authentication is configured (if required)
+    from .auth import check_auth_configured
+
+    check_auth_configured()
 
     # Register signal handlers for graceful shutdown
     loop = asyncio.get_event_loop()

@@ -105,8 +105,8 @@ def decrypt_field(encrypted: str) -> str:
         nonce, ciphertext = raw[:12], raw[12:]
         aesgcm = AESGCM(key)
         return aesgcm.decrypt(nonce, ciphertext, None).decode()
-    except Exception:
-        # If decryption fails, return as-is for backward compat
+    except Exception as exc:
+        logger.warning("decrypt_field failure: %s", exc)
         return encrypted
 
 
