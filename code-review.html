@@ -1,0 +1,1158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Code Review — mcp-witness</title>
+  <style>
+    :root {
+      --bg:        #0f1117;
+      --surface:   #1a1d27;
+      --surface2:  #222535;
+      --border:    #2e3148;
+      --accent:    #6c8eff;
+      --critical:  #ff4d6d;
+      --high:      #ff8c42;
+      --medium:    #f7c04a;
+      --low:       #5cdb95;
+      --info:      #64b5f6;
+      --muted:     #8892b0;
+      --text:      #cdd9f5;
+      --code-bg:   #141720;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); line-height: 1.65; font-size: 15px; }
+
+    /* ── Layout ── */
+    .wrapper { max-width: 1100px; margin: 0 auto; padding: 2.5rem 2rem; }
+
+    /* ── Header ── */
+    header { border-bottom: 1px solid var(--border); padding-bottom: 2rem; margin-bottom: 2.5rem; }
+    header h1 { font-size: 2rem; font-weight: 700; color: #fff; letter-spacing: -0.5px; }
+    header h1 span { color: var(--accent); }
+    .meta { display: flex; gap: 1.5rem; flex-wrap: wrap; margin-top: 0.75rem; }
+    .meta-item { display: flex; align-items: center; gap: 0.4rem; color: var(--muted); font-size: 0.875rem; }
+    .meta-item strong { color: var(--text); }
+
+    /* ── Section headers ── */
+    h2 { font-size: 1.35rem; font-weight: 700; color: #fff; margin-bottom: 1.25rem;
+         padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+    h3 { font-size: 1.05rem; font-weight: 600; color: var(--text); margin-bottom: 0.6rem; }
+
+    section { margin-bottom: 3rem; }
+
+    /* ── Executive Summary ── */
+    .exec-summary { background: var(--surface); border: 1px solid var(--border);
+                    border-left: 4px solid var(--accent); border-radius: 8px;
+                    padding: 1.5rem 1.75rem; line-height: 1.8; }
+    .exec-summary p + p { margin-top: 0.75rem; }
+
+    /* ── Scorecard ── */
+    .scorecard { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+                 gap: 1rem; margin-bottom: 2rem; }
+    .score-card { background: var(--surface); border: 1px solid var(--border);
+                  border-radius: 8px; padding: 1rem 1.25rem; text-align: center; }
+    .score-card .label { font-size: 0.78rem; color: var(--muted); text-transform: uppercase;
+                         letter-spacing: 0.08em; margin-bottom: 0.4rem; }
+    .score-card .value { font-size: 1.8rem; font-weight: 700; }
+    .score-card .value.good  { color: var(--low); }
+    .score-card .value.warn  { color: var(--medium); }
+    .score-card .value.bad   { color: var(--critical); }
+    .score-card .value.info  { color: var(--info); }
+
+    /* ── Finding cards ── */
+    .finding { background: var(--surface); border: 1px solid var(--border);
+               border-radius: 8px; margin-bottom: 1.25rem; overflow: hidden; }
+    .finding-header { display: flex; align-items: flex-start; gap: 1rem;
+                      padding: 1rem 1.25rem; cursor: pointer; }
+    .finding-header:hover { background: var(--surface2); }
+    .badge { display: inline-flex; align-items: center; justify-content: center;
+             font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em;
+             text-transform: uppercase; padding: 0.25rem 0.6rem; border-radius: 4px;
+             white-space: nowrap; flex-shrink: 0; margin-top: 0.15rem; }
+    .badge.critical { background: rgba(255,77,109,0.18); color: var(--critical); }
+    .badge.high     { background: rgba(255,140,66,0.18); color: var(--high); }
+    .badge.medium   { background: rgba(247,192,74,0.18); color: var(--medium); }
+    .badge.low      { background: rgba(92,219,149,0.18); color: var(--low); }
+    .badge.info     { background: rgba(100,181,246,0.18); color: var(--info); }
+
+    .finding-title { flex: 1; }
+    .finding-title h3 { margin-bottom: 0.2rem; }
+    .finding-loc  { font-size: 0.8rem; color: var(--accent); font-family: 'Fira Code', monospace;
+                    font-weight: 500; }
+    .finding-body { padding: 0 1.25rem 1.25rem; border-top: 1px solid var(--border); }
+    .finding-body p { margin-top: 0.9rem; color: var(--text); }
+    .finding-body p:first-child { margin-top: 0.9rem; }
+
+    /* ── Code blocks ── */
+    pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px;
+          padding: 1rem 1.25rem; overflow-x: auto; font-size: 0.82rem; line-height: 1.55;
+          margin: 0.9rem 0; font-family: 'Fira Code', 'Cascadia Code', 'JetBrains Mono', monospace; }
+    code { font-family: 'Fira Code', 'Cascadia Code', monospace; font-size: 0.87em;
+           background: var(--code-bg); border: 1px solid var(--border);
+           padding: 0.1em 0.35em; border-radius: 3px; color: #e0e4f5; }
+    pre code { background: none; border: none; padding: 0; font-size: inherit; }
+
+    .comment  { color: #546e82; }
+    .keyword  { color: #c792ea; }
+    .string   { color: #c3e88d; }
+    .number   { color: #f78c6c; }
+    .fn       { color: #82aaff; }
+    .type     { color: #ffcb6b; }
+    .danger   { color: var(--critical); font-weight: 600; }
+    .fix      { color: var(--low); }
+
+    /* ── Diff blocks ── */
+    .diff { background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px;
+            padding: 0.9rem 1.25rem; overflow-x: auto; font-size: 0.82rem;
+            line-height: 1.6; margin: 0.9rem 0;
+            font-family: 'Fira Code', monospace; }
+    .diff .del { color: #ff6b6b; background: rgba(255,107,107,0.08);
+                 display: block; padding: 0 0.2rem; }
+    .diff .add { color: #6bff8e; background: rgba(107,255,142,0.08);
+                 display: block; padding: 0 0.2rem; }
+    .diff .ctx { color: var(--muted); display: block; }
+
+    /* ── Tables ── */
+    table { width: 100%; border-collapse: collapse; font-size: 0.875rem; margin: 0.9rem 0; }
+    th { background: var(--surface2); color: var(--muted); text-transform: uppercase;
+         font-size: 0.72rem; letter-spacing: 0.07em; padding: 0.6rem 0.9rem; text-align: left; }
+    td { padding: 0.6rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--surface2); }
+
+    /* ── Alert boxes ── */
+    .alert { border-radius: 6px; padding: 0.85rem 1.1rem; margin: 0.9rem 0; font-size: 0.9rem; }
+    .alert.warn  { background: rgba(247,192,74,0.1); border-left: 3px solid var(--medium); }
+    .alert.danger{ background: rgba(255,77,109,0.1); border-left: 3px solid var(--critical); }
+    .alert.info  { background: rgba(100,181,246,0.1); border-left: 3px solid var(--info); }
+    .alert.good  { background: rgba(92,219,149,0.1); border-left: 3px solid var(--low); }
+
+    /* ── Edge cases list ── */
+    .edge-list { list-style: none; display: flex; flex-direction: column; gap: 0.85rem; }
+    .edge-list li { background: var(--surface); border: 1px solid var(--border);
+                    border-radius: 8px; padding: 1rem 1.25rem; }
+    .edge-list li strong { color: #fff; display: block; margin-bottom: 0.3rem; }
+
+    /* ── Positives ── */
+    .positives { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+                 gap: 0.85rem; }
+    .positive  { background: var(--surface); border: 1px solid var(--border);
+                 border-left: 3px solid var(--low); border-radius: 6px;
+                 padding: 0.85rem 1rem; font-size: 0.9rem; }
+    .positive strong { color: var(--low); display: block; margin-bottom: 0.25rem; }
+
+    /* ── Footer ── */
+    footer { margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--border);
+             text-align: center; color: var(--muted); font-size: 0.82rem; }
+  </style>
+</head>
+<body>
+<div class="wrapper">
+
+  <!-- ════════════════════════════════════════
+       HEADER
+  ════════════════════════════════════════ -->
+  <header>
+    <h1>Code Review &mdash; <span>mcp-witness</span></h1>
+    <div class="meta">
+      <div class="meta-item">&#128197; <strong>2026-05-19</strong></div>
+      <div class="meta-item">&#128196; <strong>v0.9.0-beta</strong></div>
+      <div class="meta-item">&#128196; <strong>23 source files &bull; ~11,175 LoC</strong></div>
+      <div class="meta-item">&#9989; <strong>343+ tests &bull; 65% coverage floor</strong></div>
+      <div class="meta-item">&#128270; <strong>Reviewer: Senior Staff Engineer</strong></div>
+    </div>
+  </header>
+
+  <!-- ════════════════════════════════════════
+       SCORECARD
+  ════════════════════════════════════════ -->
+  <div class="scorecard">
+    <div class="score-card">
+      <div class="label">Overall Health</div>
+      <div class="value warn">B+</div>
+    </div>
+    <div class="score-card">
+      <div class="label">Critical Bugs</div>
+      <div class="value bad">3</div>
+    </div>
+    <div class="score-card">
+      <div class="label">Security Issues</div>
+      <div class="value bad">4</div>
+    </div>
+    <div class="score-card">
+      <div class="label">Architecture</div>
+      <div class="value warn">B</div>
+    </div>
+    <div class="score-card">
+      <div class="label">Test Coverage</div>
+      <div class="value good">65%+</div>
+    </div>
+    <div class="score-card">
+      <div class="label">Crypto Design</div>
+      <div class="value good">A-</div>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════
+       EXECUTIVE SUMMARY
+  ════════════════════════════════════════ -->
+  <section>
+    <h2>Executive Summary</h2>
+    <div class="exec-summary">
+      <p>
+        <strong>mcp-witness</strong> is an impressively complete auditing library for
+        AI decision trails. The cryptographic foundations are genuinely strong: domain-separated
+        Merkle trees, null-byte-delimited hash payloads, Ed25519 non-repudiation with key
+        lifecycle support, and RFC&nbsp;3161-compliant TSA anchoring all reflect deep
+        security awareness. The three-role RBAC system, compliance presets, and structured
+        test coverage show production intent.
+      </p>
+      <p>
+        However, three hard bugs threaten production correctness today.
+        The most severe is a
+        <strong>silent TypeError crash in three MCP tool handlers</strong>
+        (<code>witness_stats</code>, <code>witness_health</code>, <code>witness_backfill</code>)
+        caused by arity mismatches in the handler registry dispatcher. Alongside this,
+        a <strong>silent data-corruption path</strong> in <code>decrypt_field()</code>
+        returns raw ciphertext on authentication-tag failures, and an undocumented
+        <code>MCP_WITNESS_ALLOW_ANON_WRITES</code> flag can silently bypass all configured
+        authentication.
+      </p>
+      <p>
+        Resolving these three critical issues is necessary before shipping v1.0.
+        The medium-priority items — primarily module-level global state and N&plus;1 TSA
+        calls — can be addressed in subsequent iterations without blocking the release.
+      </p>
+    </div>
+  </section>
+
+  <!-- ════════════════════════════════════════
+       SECTION 1 — CRITICAL
+  ════════════════════════════════════════ -->
+  <section>
+    <h2>&#128680; Critical Security &amp; Bug Fixes <small style="color:var(--muted);font-weight:400;font-size:0.85rem">(High Priority)</small></h2>
+
+    <!-- ── Finding 1 ── -->
+    <div class="finding">
+      <div class="finding-header">
+        <span class="badge critical">Bug</span>
+        <div class="finding-title">
+          <h3>Handler registry arity mismatch crashes three MCP tools at runtime</h3>
+          <div class="finding-loc">server.py : 515, 661, 1069, 1012</div>
+        </div>
+      </div>
+      <div class="finding-body">
+        <p>
+          The central dispatcher at line&nbsp;515 calls every registered handler as
+          <code>await handler(store, arguments)</code> — always passing two positional
+          arguments. Three handlers are registered with only a single parameter
+          (<code>store</code>), so invoking <code>witness_stats</code>,
+          <code>witness_health</code>, or <code>witness_backfill</code> raises
+          <code>TypeError: handler() takes 1 positional argument but 2 were given</code>.
+          This is caught by the outer <code>except Exception</code> at line&nbsp;518 and
+          sanitized, so callers see a generic <em>"Internal server error"</em> and no
+          chain statistics, health status, or backfill operations are ever reachable.
+          Because the error is swallowed silently, automated smoke tests that only check
+          for non-empty responses may miss this entirely.
+        </p>
+        <div class="diff">
+<span class="del">- async def handle_stats(store: StorageBackend) -> dict:</span>
+<span class="add">+ async def handle_stats(store: StorageBackend, args: dict) -> dict:</span>
+<span class="ctx">      stats = await store.get_stats()</span>
+<span class="ctx">      ...</span>
+
+<span class="del">- async def handle_health(store: StorageBackend) -> dict:</span>
+<span class="add">+ async def handle_health(store: StorageBackend, args: dict) -> dict:</span>
+
+<span class="del">- async def handle_backfill(store: StorageBackend) -> dict:</span>
+<span class="add">+ async def handle_backfill(store: StorageBackend, args: dict) -> dict:</span>
+        </div>
+        <p>
+          The same pattern should be applied consistently to all zero-argument tools.
+          As a defence-in-depth alternative, the dispatcher could use
+          <code>inspect.signature</code> to discover arity, but standardising all handlers
+          to <code>(store, args)</code> is simpler and more explicit.
+        </p>
+      </div>
+    </div>
+
+    <!-- ── Finding 2 ── -->
+    <div class="finding">
+      <div class="finding-header">
+        <span class="badge critical">Security</span>
+        <div class="finding-title">
+          <h3>decrypt_field() silently returns raw ciphertext on MAC failure</h3>
+          <div class="finding-loc">security.py : 93–110</div>
+        </div>
+      </div>
+      <div class="finding-body">
+        <p>
+          AES-256-GCM authentication-tag verification failures are silently swallowed.
+          When the tag check fails (tampered ciphertext, wrong key, or bit-rot),
+          the exception is caught and the function returns the <em>raw ciphertext bytes</em>
+          as if they were valid plaintext. This has two dangerous consequences:
+        </p>
+        <ul style="margin: 0.75rem 0 0.75rem 1.5rem; line-height: 1.9;">
+          <li><strong>Data corruption is invisible.</strong> A caller reading a sensitive field
+              will receive garbage data while believing it is valid plaintext.</li>
+          <li><strong>Tamper detection is bypassed.</strong> AEAD's entire purpose is to
+              detect ciphertext manipulation; silently falling back undoes that guarantee.</li>
+        </ul>
+        <p>
+          The comment says "backward compatibility with unencrypted records" but this
+          is an incorrect rationale — an unencrypted legacy value would have failed
+          <code>base64.b64decode</code> before reaching the AESGCM call.
+        </p>
+        <div class="diff">
+<span class="ctx">  def decrypt_field(encrypted: str) -> str:</span>
+<span class="ctx">      if not encrypted:</span>
+<span class="ctx">          return encrypted</span>
+<span class="ctx">      try:</span>
+<span class="ctx">          key = get_data_encryption_key()</span>
+<span class="ctx">          raw = base64.b64decode(encrypted)</span>
+<span class="ctx">          nonce, ciphertext = raw[:12], raw[12:]</span>
+<span class="ctx">          aesgcm = AESGCM(key)</span>
+<span class="ctx">          return aesgcm.decrypt(nonce, ciphertext, None).decode()</span>
+<span class="del">-     except Exception as exc:</span>
+<span class="del">-         logger.warning("decrypt_field failure: %s", exc)</span>
+<span class="del">-         return encrypted   # ← RETURNS CIPHERTEXT AS PLAINTEXT</span>
+<span class="add">+     except (ValueError, UnicodeDecodeError) as exc:</span>
+<span class="add">+         # ValueError covers invalid base64 AND AEAD tag failures.</span>
+<span class="add">+         # Distinguish unencrypted legacy values (base64 decode fails</span>
+<span class="add">+         # before AESGCM) from actual tag failures (InvalidTag).</span>
+<span class="add">+         logger.warning("decrypt_field failure: %s", exc)</span>
+<span class="add">+         # Return None to force callers to handle missing data explicitly.</span>
+<span class="add">+         return None  # type: ignore[return-value]</span>
+        </div>
+        <p>
+          Change the return type to <code>Optional[str]</code>, update all callers
+          to handle <code>None</code>, and separately handle the legacy-unencrypted path
+          with an explicit check before calling AESGCM (e.g., attempt base64 decode;
+          if that succeeds and the result is &ge;&nbsp;12&nbsp;bytes, treat as encrypted).
+        </p>
+      </div>
+    </div>
+
+    <!-- ── Finding 3 ── -->
+    <div class="finding">
+      <div class="finding-header">
+        <span class="badge critical">Security</span>
+        <div class="finding-title">
+          <h3>MCP_WITNESS_ALLOW_ANON_WRITES silently bypasses configured authentication</h3>
+          <div class="finding-loc">auth.py : 444–458</div>
+        </div>
+      </div>
+      <div class="finding-body">
+        <p>
+          When authentication <em>is</em> properly configured (API keys or JWT public key
+          present), the authentication path still checks two undocumented environment
+          variables before raising <code>PermissionError</code>:
+          <code>MCP_WITNESS_READ_ONLY=true</code> grants unauthenticated AUDITOR access,
+          and <code>MCP_WITNESS_ALLOW_ANON_WRITES=true</code> grants unauthenticated
+          WRITER access — even when API keys or JWT are active.
+        </p>
+        <p>
+          This creates a subtle escape hatch: an operator who reads that
+          <code>MCP_WITNESS_DEFAULT_ACCESS=deny</code> is the safe default and sets up
+          API keys correctly may not know that a misconfigured environment variable
+          elsewhere silently opens full write access. Neither variable is documented in
+          the README or <code>SECURITY.md</code>. A supply-chain or configuration
+          management mistake could set <code>MCP_WITNESS_ALLOW_ANON_WRITES=true</code>
+          and the system would silently accept unauthenticated writes.
+        </p>
+        <div class="diff">
+<span class="ctx">  if api_keys or MCP_WITNESS_JWT_PUBLIC_KEY:</span>
+<span class="del">-     read_only = os.getenv("MCP_WITNESS_READ_ONLY", "false").lower() == "true"</span>
+<span class="del">-     if read_only:</span>
+<span class="del">-         return AuthRole.AUDITOR  # ← unauthenticated bypass</span>
+<span class="del">-     allow_anon_writes = os.getenv("MCP_WITNESS_ALLOW_ANON_WRITES", "false").lower() == "true"</span>
+<span class="del">-     if allow_anon_writes:</span>
+<span class="del">-         return AuthRole.WRITER   # ← unauthenticated bypass</span>
+<span class="add">+     # When auth is configured, a missing/invalid token is always a hard</span>
+<span class="add">+     # failure. Legacy bypass variables are intentionally removed.</span>
+      raise PermissionError("Authentication required. Provide a valid JWT or API key.")
+        </div>
+        <p>
+          These legacy escape hatches should be removed entirely. If read-only anonymous
+          access is desired, it should be expressed through
+          <code>MCP_WITNESS_DEFAULT_ACCESS=read_only</code>, which is documented and
+          intentional. The <code>DEPRECATION</code> warning inside
+          <code>enforce_read_only()</code> already signals this direction.
+        </p>
+      </div>
+    </div>
+
+    <!-- ── Finding 4 ── -->
+    <div class="finding">
+      <div class="finding-header">
+        <span class="badge critical">Security</span>
+        <div class="finding-title">
+          <h3>No per-request auth token in MCP tool calls: all clients share process-level identity</h3>
+          <div class="finding-loc">server.py : 501–502 &bull; auth.py : 422–424</div>
+        </div>
+      </div>
+      <div class="finding-body">
+        <p>
+          <code>authenticate()</code> is invoked with no arguments at line&nbsp;501. When
+          <code>token=None</code>, it falls back to the <em>process-wide</em> environment
+          variable <code>MCP_WITNESS_API_KEY</code>. This means every MCP client connected
+          to the same server process shares the same authentication role, making the
+          three-role RBAC system largely fictional: if any client has admin access
+          (because the server process uses an admin key), all clients effectively do.
+        </p>
+        <p>
+          The current MCP tool interface has no standard mechanism for passing
+          per-call credentials, which is a genuine architectural constraint of
+          stdio-based MCP. The recommended mitigation is to add an optional
+          <code>auth_token</code> field to tool input schemas, document that as
+          the primary auth channel for multi-tenant deployments, and pass it
+          through to <code>authenticate()</code>:
+        </p>
+        <pre><code><span class="comment"># In call_tool dispatcher:</span>
+role = <span class="fn">authenticate</span>(token=arguments.<span class="fn">get</span>(<span class="string">"auth_token"</span>))
+<span class="comment"># Fall back to env var only in single-tenant / dev mode.</span></code></pre>
+        <p>
+          An alternative is to run separate server processes per-tenant, each with their
+          own environment variables. Either approach should be clearly documented in
+          <code>SECURITY.md</code>.
+        </p>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ════════════════════════════════════════
+       SECTION 2 — ARCHITECTURE & PERFORMANCE
+  ════════════════════════════════════════ -->
+  <section>
+    <h2>&#128736; Architecture &amp; Performance Improvements <small style="color:var(--muted);font-weight:400;font-size:0.85rem">(Medium Priority)</small></h2>
+
+    <!-- ── Finding 5 ── -->
+    <div class="finding">
+      <div class="finding-header">
+        <span class="badge high">Bug</span>
+        <div class="finding-title">
+          <h3>Default session_id truncated to 8 hex chars — birthday collision at ~65k records</h3>
+          <div class="finding-loc">server.py : 533</div>
+        </div>
+      </div>
+      <div class="finding-body">
+        <p>
+          When no <code>session_id</code> is supplied, the default is
+          <code>str(uuid4())[:8]</code>. Eight hex characters represent only
+          32&nbsp;bits of entropy. By the birthday paradox, the 50% collision probability
+          occurs after approximately &radic;(2<sup>32</sup>)&nbsp;=&nbsp;~65,536 records.
+          A collision silently merges two unrelated sessions in
+          <code>get_chain_for_session()</code>, corrupting the audit trail without
+          raising any error.
+        </p>
+        <div class="diff">
+<span class="del">- session_id=args.get("session_id", str(uuid4())[:8]),</span>
+<span class="add">+ session_id=args.get("session_id", str(uuid4())),</span>
+        </div>
+        <p>
+          Use the full UUID (36 characters, 122 bits of entropy). The character-length
+          restriction on session IDs in <code>validate_inputs()</code> already allows
+          up to 256 characters, so there is no downstream constraint preventing this.
+        </p>
+      </div>
+    </div>
+
+    <!-- ── Finding 6 ── -->
+    <div class="finding">
+      <div class="finding-header">
+        <span class="badge high">Performance</span>
+        <div class="finding-title">
+          <h3>load_api_keys() re-parses environment variable on every authentication call</h3>
+          <div class="finding-loc">auth.py : 357–392 &bull; 396–400 &bull; 444</div>
+        </div>
+      </div>
+      <div class="finding-body">
+        <p>
+          <code>load_api_keys()</code> is called two to three times per tool invocation:
+          once in <code>_lookup_api_key()</code>, and once again in
+          <code>authenticate()</code> itself (line&nbsp;444). Each call does a string
+          split, strip, and dict build over the full <code>MCP_WITNESS_API_KEYS</code>
+          value. Under load (e.g., 1,000&nbsp;records/s), this becomes a hot path that
+          allocates a new dictionary on every request. The env var is immutable at
+          runtime, so there is no correctness reason to re-parse it.
+        </p>
+        <pre><code><span class="comment"># Module-level lazy cache (analogous to get_hmac_key pattern already in security.py)</span>
+_api_keys: <span class="type">Optional</span>[dict[str, AuthRole]] = <span class="keyword">None</span>
+
+<span class="keyword">def</span> <span class="fn">load_api_keys</span>() -> dict[str, AuthRole]:
+    <span class="keyword">global</span> _api_keys
+    <span class="keyword">if</span> _api_keys <span class="keyword">is not</span> <span class="keyword">None</span>:
+        <span class="keyword">return</span> _api_keys
+    _api_keys = _parse_api_keys_from_env()
+    <span class="keyword">return</span> _api_keys</code></pre>
+        <p>
+          This follows the existing pattern established by
+          <code>get_hmac_key()</code> and <code>get_signing_key()</code> in
+          <code>security.py</code>. A sentinel sentinel-object pattern (like
+          <code>_HMAC_KEY_UNSET</code>) handles the "not yet initialised" vs
+          "intentionally empty" distinction correctly.
+        </p>
+      </div>
+    </div>
+
+    <!-- ── Finding 7 ── -->
+    <div class="finding">
+      <div class="finding-header">
+        <span class="badge medium">Performance</span>
+        <div class="finding-title">
+          <h3>Batch TSA attestation makes N sequential HTTP requests (N+1 pattern)</h3>
+          <div class="finding-loc">server.py : 735–768</div>
+        </div>
+      </div>
+      <div class="finding-body">
+        <p>
+          <code>handle_attest()</code> in batch mode iterates over all unattested
+          records and issues one RFC&nbsp;3161 HTTP request per record sequentially.
+          TSA round-trips are typically 100–500&nbsp;ms. With 1,000 unattested records,
+          this is a blocking 100–500&nbsp;second operation. FreeTSA and similar services
+          also rate-limit callers, so this will begin failing silently after the first
+          few hundred requests.
+        </p>
+        <p>
+          The existing Merkle checkpoint system already solves this: a single checkpoint
+          anchors up to 1,000 records with one TSA call. The batch attester should
+          anchor checkpoints, not individual records:
+        </p>
+        <pre><code><span class="comment"># Instead of: for record in unattested → anchor(record.record_hash)</span>
+<span class="comment"># Do: group records by checkpoint → anchor(checkpoint.merkle_root)</span>
+
+checkpoints = <span class="keyword">await</span> store.<span class="fn">list_checkpoints</span>(limit=MAX_QUERY_LIMIT)
+unanchored   = [cp <span class="keyword">for</span> cp <span class="keyword">in</span> checkpoints <span class="keyword">if not</span> cp_has_tsa_anchor(cp)]
+results = <span class="keyword">await</span> asyncio.<span class="fn">gather</span>(
+    *[anchor_service.<span class="fn">anchor</span>(cp.merkle_root, ...) <span class="keyword">for</span> cp <span class="keyword">in</span> unanchored],
+    return_exceptions=<span class="keyword">True</span>
+)</code></pre>
+        <p>
+          If per-record TSA attestation is genuinely required, use
+          <code>asyncio.gather</code> with a concurrency semaphore to cap the number
+          of simultaneous HTTP connections.
+        </p>
+      </div>
+    </div>
+
+    <!-- ── Finding 8 ── -->
+    <div class="finding">
+      <div class="finding-header">
+        <span class="badge medium">Architecture</span>
+        <div class="finding-title">
+          <h3>Module-level global state for JWT config, HMAC key, signing key, and export path</h3>
+          <div class="finding-loc">auth.py : 93–108 &bull; security.py : 32, 455</div>
+        </div>
+      </div>
+      <div class="finding-body">
+        <p>
+          Several critical configuration values are evaluated when the module is first
+          imported, not when they are first used:
+        </p>
+        <table>
+          <tr><th>Variable</th><th>File : Line</th><th>Problem</th></tr>
+          <tr>
+            <td><code>MCP_WITNESS_JWT_PUBLIC_KEY</code></td>
+            <td>auth.py:93</td>
+            <td>Read at import; changing env var after import has no effect. Tests that patch the env var must re-import the module.</td>
+          </tr>
+          <tr>
+            <td><code>DEFAULT_ACCESS_MODE</code></td>
+            <td>auth.py:104</td>
+            <td>Same issue — test isolation requires module reload.</td>
+          </tr>
+          <tr>
+            <td><code>ANCHOR_STRICT_MODE</code></td>
+            <td>security.py:32</td>
+            <td>Cannot be overridden in tests without monkeypatching the module attribute directly.</td>
+          </tr>
+          <tr>
+            <td><code>ALLOWED_EXPORT_DIR</code></td>
+            <td>security.py:455</td>
+            <td><code>Path.cwd()</code> is frozen at import time. If the process changes its working directory, export validation silently uses the old path.</td>
+          </tr>
+        </table>
+        <p>
+          The existing lazy-singleton pattern for <code>get_hmac_key()</code> and
+          <code>get_signing_key()</code> is the right model. Apply it consistently:
+        </p>
+        <div class="diff">
+<span class="del">- MCP_WITNESS_JWT_PUBLIC_KEY = os.getenv("MCP_WITNESS_JWT_PUBLIC_KEY", "")</span>
+<span class="add">+ def _jwt_public_key() -> str:</span>
+<span class="add">+     return os.getenv("MCP_WITNESS_JWT_PUBLIC_KEY", "")</span>
+<span class="comment"># Replace every reference to the constant with the function call.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Finding 9 ── -->
+    <div class="finding">
+      <div class="finding-header">
+        <span class="badge medium">Security</span>
+        <div class="finding-title">
+          <h3>TSAProvider reads undocumented TSA_URL env var instead of MCP_WITNESS_TSA_URL</h3>
+          <div class="finding-loc">anchoring.py : 307</div>
+        </div>
+      </div>
+      <div class="finding-body">
+        <p>
+          The <code>TSAProvider</code> constructor reads <code>TSA_URL</code>:
+        </p>
+        <pre><code>self.tsa_url = tsa_url <span class="keyword">or</span> os.<span class="fn">getenv</span>(<span class="danger">"TSA_URL"</span>) <span class="keyword">or</span> self.DEFAULT_TSA_URL</code></pre>
+        <p>
+          But the <em>README</em> and configuration documentation consistently name this
+          variable <code>MCP_WITNESS_TSA_URL</code>. An operator who sets
+          <code>MCP_WITNESS_TSA_URL=https://my-corporate-tsa.example.com/tsr</code>
+          will find their custom TSA silently ignored and all timestamps going to the
+          public FreeTSA instance. Beyond the operational annoyance, if an organisation
+          requires a specific TSA for compliance (e.g., a qualified Trust Service
+          Provider under eIDAS), this mismatch is a compliance violation.
+        </p>
+        <div class="diff">
+<span class="del">- self.tsa_url = tsa_url or os.getenv("TSA_URL") or self.DEFAULT_TSA_URL</span>
+<span class="add">+ self.tsa_url = (</span>
+<span class="add">+     tsa_url</span>
+<span class="add">+     or os.getenv("MCP_WITNESS_TSA_URL")  # canonical name</span>
+<span class="add">+     or os.getenv("TSA_URL")             # backward-compat alias (log a deprecation)</span>
+<span class="add">+     or self.DEFAULT_TSA_URL</span>
+<span class="add">+ )</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Finding 10 ── -->
+    <div class="finding">
+      <div class="finding-header">
+        <span class="badge medium">Security</span>
+        <div class="finding-title">
+          <h3>Redaction stores only 16 hex chars of SHA-256 (64-bit birthday collision risk)</h3>
+          <div class="finding-loc">hasher.py : 205</div>
+        </div>
+      </div>
+      <div class="finding-body">
+        <p>
+          When a field is redacted, its original value is replaced with:
+        </p>
+        <pre><code>f<span class="string">"[REDACTED:sha256:{hash_data(original_value)[:<span class="danger">16</span>]}]"</span></code></pre>
+        <p>
+          Truncating to 16 hex characters leaves only 64 bits. The birthday attack
+          threshold for a collision is approximately 2<sup>32</sup>&nbsp;≈&nbsp;4.3&nbsp;billion
+          records — reachable in high-throughput production systems. A collision here
+          means two different original values produce the same redaction token, which
+          could allow an attacker who knows one original value to falsely claim knowledge
+          of another. The full 256-bit hash should be stored; the marginal storage cost
+          of 48 extra characters per redacted field is negligible.
+        </p>
+        <div class="diff">
+<span class="del">- current[final_key] = f"[REDACTED:sha256:{hash_data(original_value)[:16]}]"</span>
+<span class="add">+ current[final_key] = f"[REDACTED:sha256:{hash_data(original_value)}]"</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Finding 11 ── -->
+    <div class="finding">
+      <div class="finding-header">
+        <span class="badge medium">Architecture</span>
+        <div class="finding-title">
+          <h3>verify_merkle_proof_strict() expected depth formula incorrect for non-power-of-2 trees</h3>
+          <div class="finding-loc">merkle.py : 237–241</div>
+        </div>
+      </div>
+      <div class="finding-body">
+        <p>
+          The strict verifier uses <code>math.ceil(math.log2(tree_size))</code> where
+          <code>tree_size</code> is the number of <em>records</em>, not padded leaves.
+          The tree is internally padded to the next power of 2, so the actual proof
+          depth is <code>ceil(log2(next_power_of_2(tree_size)))</code>. For most inputs
+          these agree, but for exactly-power-of-2 sizes they diverge:
+        </p>
+        <table>
+          <tr><th>tree_size (records)</th><th>Padded to</th><th>Actual depth</th><th>Formula gives</th><th>Result</th></tr>
+          <tr><td>4</td><td>4</td><td>2</td><td>ceil(log₂(4))=2</td><td>✅ OK</td></tr>
+          <tr><td>5</td><td>8</td><td>3</td><td>ceil(log₂(5))=3</td><td>✅ OK</td></tr>
+          <tr><td>8</td><td>8</td><td>3</td><td>ceil(log₂(8))=3</td><td>✅ OK</td></tr>
+          <tr><td>1</td><td>1</td><td>0</td><td>guarded by tree_size&gt;1</td><td>✅ OK</td></tr>
+          <tr><td>3</td><td>4</td><td>2</td><td>ceil(log₂(3))≈1.58→2</td><td>✅ OK</td></tr>
+        </table>
+        <p>
+          The formula is actually correct for the current implementation. However, it
+          is fragile: the correctness depends on an implicit coupling between the tree's
+          zero-leaf padding strategy and this formula. Add an inline comment explaining
+          why <code>math.ceil(math.log2(tree_size))</code> produces the correct depth
+          for a zero-leaf-padded power-of-2 tree, and add a test for every power-of-2
+          boundary value (2, 4, 8, 16…). As written, the code will silently break if the
+          padding strategy changes.
+        </p>
+      </div>
+    </div>
+
+    <!-- ── Finding 12 ── -->
+    <div class="finding">
+      <div class="finding-header">
+        <span class="badge medium">Architecture</span>
+        <div class="finding-title">
+          <h3>crypto_agility: SigningAlgorithm.NONE verification returns True unconditionally</h3>
+          <div class="finding-loc">crypto_agility.py : 103–104</div>
+        </div>
+      </div>
+      <div class="finding-body">
+        <p>
+          In <code>versioned_verify()</code>, when <code>algo == SigningAlgorithm.NONE</code>,
+          the function returns <code>True</code> — treating the absence of a signature
+          as <em>valid</em>. If an attacker can craft or replay a record with
+          <code>"algo": "none"</code> in its signature field, every signature check
+          on that record passes unconditionally, regardless of the actual record content.
+        </p>
+        <pre><code><span class="keyword">if</span> algo == SigningAlgorithm.<span class="danger">NONE</span>:
+    <span class="keyword">return</span> <span class="danger">True</span>  <span class="comment"># ← no signature check at all</span></code></pre>
+        <p>
+          This is the classic "algorithm confusion" or "none algorithm" attack that has
+          compromised numerous JWT implementations. The correct pattern is to treat a
+          stored <code>algo=none</code> record as <em>unsigned</em>, not as
+          <em>valid</em>: return <code>False</code> when a public key is configured but
+          the record lacks a real signature, and return a neutral result (e.g., a
+          <code>SignatureResult</code> enum) when signing was genuinely not configured.
+        </p>
+        <div class="diff">
+<span class="del">- if algo == SigningAlgorithm.NONE:</span>
+<span class="del">-     return True  # No signing configured — trivially valid</span>
+<span class="add">+ if algo == SigningAlgorithm.NONE:</span>
+<span class="add">+     # Record was created without a signing key. Return False so callers</span>
+<span class="add">+     # can distinguish "not signed" from "signature verified".</span>
+<span class="add">+     return False</span>
+        </div>
+        <p>
+          Callers that need to distinguish "not signed" from "invalid signature" should
+          check whether a signing key is configured separately rather than encoding that
+          logic inside the signature verifier.
+        </p>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ════════════════════════════════════════
+       SECTION 3 — MAINTAINABILITY
+  ════════════════════════════════════════ -->
+  <section>
+    <h2>&#128064; Maintainability &amp; Readability <small style="color:var(--muted);font-weight:400;font-size:0.85rem">(Nitpicks)</small></h2>
+
+    <!-- ── Finding 13 ── -->
+    <div class="finding">
+      <div class="finding-header">
+        <span class="badge low">Typing</span>
+        <div class="finding-title">
+          <h3>_TOOL_HANDLERS typed as dict[str, callable] — callable is not a typing construct</h3>
+          <div class="finding-loc">server.py : 473</div>
+        </div>
+      </div>
+      <div class="finding-body">
+        <p>
+          <code>callable</code> (lowercase) is a Python built-in function, not a type
+          annotation. Using it in a generic alias like <code>dict[str, callable]</code>
+          does not provide useful type information to mypy and will produce a warning
+          under strict checking. The correct annotation expresses the handler signature:
+        </p>
+        <div class="diff">
+<span class="del">- _TOOL_HANDLERS: dict[str, callable] = {}</span>
+<span class="add">+ from typing import Callable, Awaitable</span>
+<span class="add">+ _Handler = Callable[[StorageBackend, dict], Awaitable[dict]]</span>
+<span class="add">+ _TOOL_HANDLERS: dict[str, _Handler] = {}</span>
+        </div>
+        <p>
+          This also makes the arity mismatch described in Finding&nbsp;1 a mypy error
+          at development time rather than a runtime crash in production.
+        </p>
+      </div>
+    </div>
+
+    <!-- ── Finding 14 ── -->
+    <div class="finding">
+      <div class="finding-header">
+        <span class="badge low">Quality</span>
+        <div class="finding-title">
+          <h3>Bare Exception raises in anchoring providers obscure failure categorisation</h3>
+          <div class="finding-loc">anchoring.py : 361, 530, 730</div>
+        </div>
+      </div>
+      <div class="finding-body">
+        <p>
+          Three locations raise bare <code>Exception</code> instead of domain-specific
+          types:
+        </p>
+        <pre><code>raise <span class="danger">Exception</span>(f<span class="string">"TSA returned HTTP {response.status_code}"</span>)
+raise <span class="danger">Exception</span>(<span class="string">"All OpenTimestamps servers failed"</span>)
+raise <span class="danger">Exception</span>(f<span class="string">"Pinata returned {response.status_code}"</span>)</code></pre>
+        <p>
+          <code>AnchorFailureError</code> already exists in the same file and is used
+          by <code>AnchorService.anchor()</code>. The provider-level methods should
+          raise it directly (or a more specific subclass) so that callers can handle
+          anchor failures without catching all exceptions:
+        </p>
+        <pre><code><span class="keyword">class</span> <span class="type">TSAError</span>(AnchorFailureError): ...
+<span class="keyword">class</span> <span class="type">OTSError</span>(AnchorFailureError): ...
+
+raise <span class="type">TSAError</span>(f<span class="string">"TSA returned HTTP {response.status_code}"</span>, failures=[])</code></pre>
+      </div>
+    </div>
+
+    <!-- ── Finding 15 ── -->
+    <div class="finding">
+      <div class="finding-header">
+        <span class="badge low">DRY</span>
+        <div class="finding-title">
+          <h3>Dead code: duplicate-last-leaf logic inside build_merkle_tree is unreachable</h3>
+          <div class="finding-loc">merkle.py : 117</div>
+        </div>
+      </div>
+      <div class="finding-body">
+        <p>
+          Inside the main loop of <code>build_merkle_tree()</code>:
+        </p>
+        <pre><code>right = current[i + 1] <span class="keyword">if</span> i + 1 < len(current) <span class="danger">else</span> current[i]</code></pre>
+        <p>
+          The <code>else current[i]</code> branch (duplicate last node) can never
+          execute: the leaf list is padded to the next power of 2 before the loop
+          begins (line&nbsp;108), so every level above the leaf level is also
+          even-numbered. The branch implies a fallback that contradicts the zero-leaf
+          padding strategy and would produce a different root than expected by
+          <code>verify_merkle_proof_strict()</code>. Remove it, or add an assertion:
+        </p>
+        <div class="diff">
+<span class="del">- right = current[i + 1] if i + 1 &lt; len(current) else current[i]</span>
+<span class="add">+ assert i + 1 &lt; len(current), "Tree must be padded to power-of-2 before loop"</span>
+<span class="add">+ right = current[i + 1]</span>
+        </div>
+        <p>
+          The same pattern appears in <code>verify_tree_integrity()</code> at line&nbsp;286
+          and should be fixed there too.
+        </p>
+      </div>
+    </div>
+
+    <!-- ── Finding 16 ── -->
+    <div class="finding">
+      <div class="finding-header">
+        <span class="badge low">Nitpick</span>
+        <div class="finding-title">
+          <h3>handle_delete returns sanitize_error(e) dict instead of raising for cleaner error path</h3>
+          <div class="finding-loc">server.py : 1193–1194</div>
+        </div>
+      </div>
+      <div class="finding-body">
+        <p>
+          Most handlers let exceptions propagate to the outer <code>except</code> block
+          in <code>call_tool()</code> where <code>sanitize_error</code> is applied
+          uniformly. <code>handle_delete</code> and <code>handle_search</code> break
+          this pattern by calling <code>sanitize_error</code> directly and returning a
+          dict. This dual path means the outer handler's catch block never fires for
+          these tools, which can cause subtle inconsistencies (e.g., metrics increments
+          that happen in the outer handler won't fire). Let exceptions propagate and
+          rely on the single error boundary.
+        </p>
+        <div class="diff">
+<span class="del">-     except Exception as e:</span>
+<span class="del">-         return sanitize_error(e)</span>
+<span class="comment"># Remove — the outer call_tool() handler covers this already.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Finding 17 ── -->
+    <div class="finding">
+      <div class="finding-header">
+        <span class="badge low">Nitpick</span>
+        <div class="finding-title">
+          <h3>witness_delete not listed in RBAC tool permission sets — tool is silently accessible to all</h3>
+          <div class="finding-loc">auth.py : 55–86</div>
+        </div>
+      </div>
+      <div class="finding-body">
+        <p>
+          <code>_READ_TOOLS</code> and <code>_WRITE_TOOLS</code> define the universe of
+          tools subject to RBAC. <code>witness_delete</code> and
+          <code>witness_search</code> do not appear in either set.
+          <code>ALL_TOOLS = _READ_TOOLS | _WRITE_TOOLS</code> therefore excludes them.
+          When <code>authorize(role, "witness_delete")</code> is called, it finds the tool
+          is not in <code>ROLE_PERMISSIONS[role]</code> and raises <code>PermissionError</code>
+          for <em>every</em> role — even ADMIN. This makes GDPR deletion and full-text
+          search unreachable through authenticated paths.
+        </p>
+        <div class="diff">
+<span class="ctx">_WRITE_TOOLS = frozenset({</span>
+<span class="ctx">    "witness_record",</span>
+<span class="ctx">    "witness_attest",</span>
+<span class="ctx">    "witness_anchor",</span>
+<span class="ctx">    "witness_backfill",</span>
+<span class="ctx">    "witness_configure_compliance",</span>
+<span class="add">+   "witness_delete",     # GDPR erasure — admin/writer only</span>
+<span class="ctx">})</span>
+<span class="ctx">_READ_TOOLS = frozenset({</span>
+<span class="ctx">    ...,</span>
+<span class="add">+   "witness_search",     # full-text search — read-only</span>
+<span class="ctx">})</span>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ════════════════════════════════════════
+       SECTION 4 — EDGE CASES
+  ════════════════════════════════════════ -->
+  <section>
+    <h2>&#9888;&#65039; Edge Cases to Consider</h2>
+    <ul class="edge-list">
+
+      <li>
+        <strong>Empty-string field encryption bypass</strong>
+        <p>
+          <code>encrypt_field()</code> at <code>security.py:84</code> returns early
+          with <code>if not plaintext: return plaintext</code>. An empty string is
+          falsy in Python, so an empty sensitive field (e.g., a user clears their
+          phone number) is stored in plaintext while all non-empty values for the
+          same field are encrypted. A partial-data query on the database could
+          distinguish "was ever empty" from "was always a value" even after redaction,
+          leaking metadata. Fix: check <code>if plaintext is None: return plaintext</code>
+          to encrypt zero-length strings.
+        </p>
+      </li>
+
+      <li>
+        <strong>JWT clock-skew asymmetry: exp has no tolerance, iat has 30 seconds</strong>
+        <p>
+          The JWT verifier at <code>auth.py:325</code> rejects tokens where
+          <code>exp &lt; now</code> (zero tolerance), but at line&nbsp;336 allows
+          <code>iat</code> up to 30 seconds in the future. A client with a clock
+          that is 29 seconds fast will successfully issue tokens but those tokens may
+          be rejected 30 seconds before their stated expiry (when the server clock
+          catches up to their <code>exp</code> which was set 30s ahead). Applying the
+          same &plusmn;30&nbsp;s tolerance symmetrically to the expiry check — i.e.,
+          reject when <code>exp + 30 &lt; now</code> — avoids spurious rejections
+          without meaningfully widening the acceptance window.
+        </p>
+      </li>
+
+      <li>
+        <strong>Zero-record Merkle proofs and verification with an empty chain</strong>
+        <p>
+          <code>build_merkle_tree([])</code> returns <code>MerkleTree(root="", ...)</code>
+          which is correct. However, <code>verify_merkle_proof_strict()</code> called
+          with <code>tree_size=0</code> enters the <code>tree_size &gt; 1</code> branch
+          as false, skips depth validation, and then tries to compute a root from an
+          empty <code>proof_path</code>: <code>current = leaf_hash</code> with no loop
+          iterations, so the function returns <code>leaf_hash == ""</code>. Any
+          non-empty leaf hash would evaluate to <code>False</code>, while an empty
+          <code>leaf_hash</code> would silently pass. Add an explicit guard:
+          <code>if tree_size == 0: return False</code> at the top of
+          <code>verify_merkle_proof_strict()</code>.
+        </p>
+      </li>
+
+      <li>
+        <strong>Concurrent first-write race in SQLite WAL mode with no explicit sequence lock</strong>
+        <p>
+          The SQLite backend uses <code>BEGIN IMMEDIATE</code> to serialise writes,
+          but the sequence number is derived by querying <code>MAX(sequence)</code>
+          inside the transaction. If two writers begin their transactions at the
+          exact same instant, both may read the same <code>MAX(sequence)</code>
+          before either commits, resulting in a duplicate sequence number. The
+          subsequent unique-constraint check would surface this as an integrity
+          error, but not before one transaction has already computed and stored a
+          hash against that sequence number. Mitigation: use a database-managed
+          <code>AUTOINCREMENT</code> primary key for sequence and remove the
+          application-layer <code>MAX(sequence)+1</code> computation.
+        </p>
+      </li>
+
+    </ul>
+  </section>
+
+  <!-- ════════════════════════════════════════
+       SECTION 5 — WHAT'S DONE WELL
+  ════════════════════════════════════════ -->
+  <section>
+    <h2>&#10004;&#65039; Commendable Design Decisions</h2>
+    <div class="positives">
+      <div class="positive">
+        <strong>Domain-separated Merkle tree (RFC-compliant)</strong>
+        Leaf prefix <code>0x00</code> and node prefix <code>0x01</code> correctly
+        prevent second-preimage attacks. Most open-source Merkle implementations skip this.
+      </div>
+      <div class="positive">
+        <strong>Null-byte delimiter in hash payload</strong>
+        Using <code>\x00</code> between hash-chain components prevents length-extension
+        and delimiter-injection attacks. An excellent, non-obvious choice.
+      </div>
+      <div class="positive">
+        <strong>Deterministic genesis hash</strong>
+        <code>SHA256("MCP_WITNESS_GENESIS_V1")</code> avoids the all-zeros genesis
+        sentinel that has historically enabled confusion attacks in other audit-trail
+        systems.
+      </div>
+      <div class="positive">
+        <strong>Ed25519 non-repudiation with key lifecycle</strong>
+        Versioned signatures, a trust store, key rotation support, and the
+        <code>REQUIRE_PERSISTENT_KEY</code> guard show production-grade key management intent.
+      </div>
+      <div class="positive">
+        <strong>Proper RFC 3161 DER encoding</strong>
+        Hand-rolled ASN.1 DER builder for TSA requests is more reliable than
+        many library implementations and avoids a dependency on pyasn1 at runtime.
+      </div>
+      <div class="positive">
+        <strong>Error sanitisation boundary</strong>
+        <code>sanitize_error()</code> correctly gates on exception type, never leaks
+        stack traces or SQL to clients, and logs the full detail server-side.
+      </div>
+      <div class="positive">
+        <strong>Rate limiting and idempotency are DB-backed</strong>
+        Most audit systems implement these in-memory. The DB-backed token bucket
+        survives restarts and works across multiple processes sharing a database.
+      </div>
+      <div class="positive">
+        <strong>GDPR redaction preserves hash chain</strong>
+        Nulling data fields while keeping the record in the chain is the correct
+        trade-off between right-to-erasure and audit trail integrity.
+      </div>
+      <div class="positive">
+        <strong>Deny-by-default access policy</strong>
+        <code>MCP_WITNESS_DEFAULT_ACCESS=deny</code> as the out-of-the-box default
+        is the correct secure posture for a compliance-sensitive system.
+      </div>
+      <div class="positive">
+        <strong>Crypto agility versioning</strong>
+        Storing algorithm identifiers alongside signatures enables future algorithm
+        migration without breaking existing records.
+      </div>
+    </div>
+  </section>
+
+  <!-- ════════════════════════════════════════
+       SUMMARY TABLE
+  ════════════════════════════════════════ -->
+  <section>
+    <h2>&#128203; Finding Summary</h2>
+    <table>
+      <tr>
+        <th>#</th><th>Severity</th><th>File : Line(s)</th><th>Title</th>
+      </tr>
+      <tr>
+        <td>1</td>
+        <td><span class="badge critical">Critical</span></td>
+        <td><code>server.py:515,661,1069,1012</code></td>
+        <td>Handler arity mismatch crashes witness_stats, witness_health, witness_backfill</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td><span class="badge critical">Critical</span></td>
+        <td><code>security.py:93–110</code></td>
+        <td>decrypt_field() silently returns ciphertext on AEAD tag failure</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td><span class="badge critical">Critical</span></td>
+        <td><code>auth.py:444–458</code></td>
+        <td>ALLOW_ANON_WRITES env var bypasses configured authentication</td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td><span class="badge critical">Critical</span></td>
+        <td><code>server.py:501–502, auth.py:422–424</code></td>
+        <td>All MCP clients share process-level auth; per-user RBAC is non-functional</td>
+      </tr>
+      <tr>
+        <td>5</td>
+        <td><span class="badge high">High</span></td>
+        <td><code>server.py:533</code></td>
+        <td>Default session_id is 8 chars — birthday collision at ~65k records</td>
+      </tr>
+      <tr>
+        <td>6</td>
+        <td><span class="badge high">High</span></td>
+        <td><code>auth.py:357–400</code></td>
+        <td>load_api_keys() re-parses env var on every authentication call</td>
+      </tr>
+      <tr>
+        <td>7</td>
+        <td><span class="badge medium">Medium</span></td>
+        <td><code>server.py:735–768</code></td>
+        <td>Batch TSA attestation issues N sequential HTTP requests (N+1)</td>
+      </tr>
+      <tr>
+        <td>8</td>
+        <td><span class="badge medium">Medium</span></td>
+        <td><code>auth.py:93–108, security.py:32,455</code></td>
+        <td>Module-level env var evaluation prevents hot-reload and complicates testing</td>
+      </tr>
+      <tr>
+        <td>9</td>
+        <td><span class="badge medium">Medium</span></td>
+        <td><code>anchoring.py:307</code></td>
+        <td>TSAProvider reads undocumented TSA_URL instead of MCP_WITNESS_TSA_URL</td>
+      </tr>
+      <tr>
+        <td>10</td>
+        <td><span class="badge medium">Medium</span></td>
+        <td><code>hasher.py:205</code></td>
+        <td>Redaction hash truncated to 64 bits — birthday collision risk</td>
+      </tr>
+      <tr>
+        <td>11</td>
+        <td><span class="badge medium">Medium</span></td>
+        <td><code>merkle.py:237–241</code></td>
+        <td>verify_merkle_proof_strict() depth formula relies on undocumented invariant</td>
+      </tr>
+      <tr>
+        <td>12</td>
+        <td><span class="badge medium">Medium</span></td>
+        <td><code>crypto_agility.py:103–104</code></td>
+        <td>SigningAlgorithm.NONE verification returns True — algorithm confusion risk</td>
+      </tr>
+      <tr>
+        <td>13</td>
+        <td><span class="badge low">Low</span></td>
+        <td><code>server.py:473</code></td>
+        <td>_TOOL_HANDLERS typed with lowercase callable instead of Callable[…]</td>
+      </tr>
+      <tr>
+        <td>14</td>
+        <td><span class="badge low">Low</span></td>
+        <td><code>anchoring.py:361,530,730</code></td>
+        <td>Bare Exception raises instead of domain-specific AnchorFailureError</td>
+      </tr>
+      <tr>
+        <td>15</td>
+        <td><span class="badge low">Low</span></td>
+        <td><code>merkle.py:117,286</code></td>
+        <td>Dead code: duplicate-last-leaf branch is unreachable after power-of-2 padding</td>
+      </tr>
+      <tr>
+        <td>16</td>
+        <td><span class="badge low">Low</span></td>
+        <td><code>server.py:1193–1194</code></td>
+        <td>handle_delete/handle_search break the uniform error-boundary pattern</td>
+      </tr>
+      <tr>
+        <td>17</td>
+        <td><span class="badge low">Low</span></td>
+        <td><code>auth.py:55–86</code></td>
+        <td>witness_delete and witness_search missing from RBAC permission sets</td>
+      </tr>
+    </table>
+  </section>
+
+  <footer>
+    Code review conducted by Claude Code (claude-sonnet-4-6) &bull;
+    Repository: <strong>edwiniac/mcp-witness</strong> &bull;
+    Branch: <strong>claude/code-review-mcp-B68MG</strong> &bull;
+    2026-05-19
+  </footer>
+
+</div>
+</body>
+</html>
