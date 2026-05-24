@@ -26,6 +26,7 @@ from .models import (
     ActionType,
     ActorType,
     Sensitivity,
+    WitnessRecord,
 )
 from .security import (
     sanitize_error,
@@ -91,6 +92,30 @@ def _create_storage() -> StorageBackend:
             ) from e
     else:
         return SqliteStorage(DEFAULT_DB_PATH)
+
+
+def record_to_dict(r: WitnessRecord) -> dict:
+    """Serialize a WitnessRecord to a JSON-safe dict for export."""
+    return {
+        "id": str(r.id),
+        "sequence": r.sequence,
+        "timestamp": r.timestamp.isoformat(),
+        "prev_hash": r.prev_hash,
+        "record_hash": r.record_hash,
+        "actor_type": r.actor_type.value,
+        "actor_id": r.actor_id,
+        "session_id": r.session_id,
+        "action_type": r.action_type.value,
+        "tool_name": r.tool_name,
+        "input_hash": r.input_hash,
+        "output_hash": r.output_hash,
+        "reasoning": r.reasoning,
+        "confidence": r.confidence,
+        "sensitivity": r.sensitivity.value,
+        "retention_days": r.retention_days,
+        "attested": r.tsa_receipt is not None,
+        "anchored_at": r.anchored_at,
+    }
 
 
 async def get_storage() -> StorageBackend:
@@ -828,6 +853,68 @@ async def handle_export(store: StorageBackend, args: dict) -> dict:
         }
 
     # Full JSON export
+    if output_path:
+        # Streaming export: paginate and write incrementally to avoid
+        # materializing all records in memory at once.
+        safe_path = validate_export_path(output_path)
+        record_count = 0
+        with open(safe_path, "w", encoding="utf-8") as f:
+            f.write("{\n")
+            f.write(f'  "export_format": "json",\n')
+            now_iso = datetime.now(timezone.utc).isoformat()
+            f.write(f'  "generated_at": "{now_iso}",\n')
+            if verification:
+                v = {
+                    "valid": verification.valid,
+                    "records_checked": verification.records_checked,
+                    "issues": verification.issues,
+                }
+                f.write(f'  "chain_verification": {json.dumps(v)},\n')
+            else:
+                f.write('  "chain_verification": null,\n')
+            f.write('  "records": [\n')
+
+            first = True
+            offset = 0
+            page_size = 1000
+            while True:
+                rows = await store.query(
+                    from_time=from_time,
+                    to_time=to_time,
+                    limit=page_size,
+                    offset=offset,
+                )
+                if not rows:
+                    break
+                for r in rows:
+                    if session_ids and r.session_id not in session_ids:
+                        continue
+                    if not first:
+                        f.write(",\n")
+                    first = False
+                    f.write(f"    {json.dumps(record_to_dict(r), default=str)}")
+                    record_count += 1
+                offset += page_size
+
+            f.write("\n  ]\n")
+            f.write("}\n")
+
+        return {
+            "exported": True,
+            "output_path": str(safe_path),
+            "record_count": record_count,
+            "size_bytes": safe_path.stat().st_size,
+        }
+
+    # In-memory export (no output file) — keep backward-compatible behaviour
+    records = await store.query(
+        from_time=from_time,
+        to_time=to_time,
+        limit=MAX_QUERY_LIMIT,
+    )
+    if session_ids:
+        records = [r for r in records if r.session_id in session_ids]
+
     export_data = {
         "export_format": "json",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -840,42 +927,8 @@ async def handle_export(store: StorageBackend, args: dict) -> dict:
             if verification
             else None
         ),
-        "records": [
-            {
-                "id": str(r.id),
-                "sequence": r.sequence,
-                "timestamp": r.timestamp.isoformat(),
-                "prev_hash": r.prev_hash,
-                "record_hash": r.record_hash,
-                "actor_type": r.actor_type.value,
-                "actor_id": r.actor_id,
-                "session_id": r.session_id,
-                "action_type": r.action_type.value,
-                "tool_name": r.tool_name,
-                "input_hash": r.input_hash,
-                "output_hash": r.output_hash,
-                "reasoning": r.reasoning,
-                "confidence": r.confidence,
-                "sensitivity": r.sensitivity.value,
-                "retention_days": r.retention_days,
-                "attested": r.tsa_receipt is not None,
-                "anchored_at": r.anchored_at,
-            }
-            for r in records
-        ],
+        "records": [record_to_dict(r) for r in records],
     }
-
-    # Write to file with path traversal protection if output specified
-    if output_path:
-        safe_path = validate_export_path(output_path)
-        with open(safe_path, "w") as f:
-            json.dump(export_data, f, indent=2, default=str)
-        return {
-            "exported": True,
-            "output_path": str(safe_path),
-            "record_count": len(records),
-            "size_bytes": safe_path.stat().st_size,
-        }
 
     return export_data
 
