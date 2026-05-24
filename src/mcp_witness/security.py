@@ -106,7 +106,7 @@ def decrypt_field(encrypted: str) -> str:
         aesgcm = AESGCM(key)
         return aesgcm.decrypt(nonce, ciphertext, None).decode()
     except Exception as exc:
-        logger.warning("decrypt_field failure: %s", exc)
+        logger.warning("decrypt_field failure: %s", exc, extra={"error_type": type(exc).__name__})
         return encrypted
 
 
