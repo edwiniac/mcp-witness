@@ -492,6 +492,25 @@ async def list_tools() -> list[Tool]:
     ]
 
 
+# ── Argument validators ────────────────────────────────────────────────
+
+
+def _require_int(value: object, field: str, minimum: int = 0) -> int:
+    """Validate that *value* is a non-negative integer >= *minimum*."""
+    if not isinstance(value, int) or value < minimum:
+        raise ValueError(f"{field} must be integer >= {minimum}")
+    return value
+
+
+def _require_str(value: object, field: str, max_len: int = 0) -> str:
+    """Validate that *value* is a string, optionally capped at *max_len*."""
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    if max_len and len(value) > max_len:
+        raise ValueError(f"{field} exceeds max length {max_len}")
+    return value
+
+
 # ── Tool handler registry ──────────────────────────────────────────────
 # Replaces the giant if/elif chain. Register handlers by tool name.
 
@@ -562,7 +581,7 @@ async def handle_record(store: StorageBackend, args: dict) -> dict:
         reasoning=args.get("reasoning"),
         confidence=args.get("confidence"),
         sensitivity=Sensitivity(args.get("sensitivity", "internal")),
-        retention_days=args.get("retention_days", 365),
+        retention_days=_require_int(args.get("retention_days", 365), "retention_days", minimum=1),
         redact_fields=args.get("redact_fields"),
     )
 
@@ -612,10 +631,10 @@ async def handle_query(store: StorageBackend, args: dict) -> dict:
     action_type = ActionType(args["action_type"]) if args.get("action_type") else None
     sensitivity = Sensitivity(args["sensitivity"]) if args.get("sensitivity") else None
 
-    limit = args.get("limit", 100)
-    if limit > MAX_QUERY_LIMIT:
-        logger.warning("Query limit %d exceeds max %d, clamping", limit, MAX_QUERY_LIMIT)
-        limit = min(limit, MAX_QUERY_LIMIT)
+    limit = _require_int(args.get("limit", 100), "limit")
+    offset = _require_int(args.get("offset", 0), "offset")
+    limit = min(limit, MAX_QUERY_LIMIT)
+    offset = min(offset, MAX_OFFSET)
 
     records = await store.query(
         session_id=args.get("session_id"),
@@ -626,6 +645,7 @@ async def handle_query(store: StorageBackend, args: dict) -> dict:
         from_time=from_time,
         to_time=to_time,
         limit=limit,
+        offset=offset,
     )
 
     return {
@@ -683,7 +703,7 @@ async def handle_chain(store: StorageBackend, args: dict) -> dict:
 
 
 @_register("witness_stats")
-async def handle_stats(store: StorageBackend) -> dict:
+async def handle_stats(store: StorageBackend, args: dict) -> dict:
     """Handle witness_stats tool call."""
     stats = await store.get_stats()
     anchor_stats = await store.get_anchor_stats()
@@ -941,7 +961,8 @@ async def handle_export(store: StorageBackend, args: dict) -> dict:
 @_register("witness_checkpoints")
 async def handle_checkpoints(store: StorageBackend, args: dict) -> dict:
     """Handle witness_checkpoints tool call."""
-    limit = min(args.get("limit", 20), MAX_QUERY_LIMIT)
+    limit = _require_int(args.get("limit", 20), "limit")
+    limit = min(limit, MAX_QUERY_LIMIT)
     checkpoints = await store.list_checkpoints(limit=limit)
 
     return {
@@ -1052,6 +1073,7 @@ async def handle_proof(store: StorageBackend, args: dict) -> dict:
     sequence = args.get("sequence")
     if sequence is None:
         return {"error": "sequence is required"}
+    sequence = _require_int(sequence, "sequence")
 
     proof = await store.get_proof_package(sequence)
 
@@ -1062,7 +1084,7 @@ async def handle_proof(store: StorageBackend, args: dict) -> dict:
 
 
 @_register("witness_backfill")
-async def handle_backfill(store: StorageBackend) -> dict:
+async def handle_backfill(store: StorageBackend, args: dict) -> dict:
     """Handle witness_backfill tool call."""
     checkpoints_created = await store.backfill_checkpoints()
 
@@ -1119,7 +1141,7 @@ async def handle_compliance(store: StorageBackend, args: dict) -> dict:
 
 
 @_register("witness_health")
-async def handle_health(store: StorageBackend) -> dict:
+async def handle_health(store: StorageBackend, args: dict) -> dict:
     """Handle witness_health tool call.
 
     Returns a comprehensive health check of the witness system.
@@ -1209,7 +1231,7 @@ async def handle_delete(store: StorageBackend, args: dict) -> dict:
     """
     record_id = args.get("record_id")
     session_id = args.get("session_id")
-    reason = args.get("reason", "")
+    reason = _require_str(args.get("reason", ""), "reason", max_len=4096)
 
     if not reason:
         return {"error": "'reason' is required for deletion/redaction (audit trail)"}
@@ -1259,11 +1281,9 @@ async def handle_search(store: StorageBackend, args: dict) -> dict:
 
     Full-text search (LIKE-based) across reasoning, input_data, output_data.
     """
-    query = args.get("query", "")
-    limit = args.get("limit", 50)
-    if limit > MAX_QUERY_LIMIT:
-        logger.warning("Search limit %d exceeds max %d, clamping", limit, MAX_QUERY_LIMIT)
-        limit = min(limit, MAX_QUERY_LIMIT)
+    query = _require_str(args.get("query", ""), "query", max_len=1024)
+    limit = _require_int(args.get("limit", 50), "limit")
+    limit = min(limit, MAX_QUERY_LIMIT)
 
     if not query:
         return {"error": "'query' is required"}

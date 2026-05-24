@@ -233,7 +233,7 @@ class TestHandleStats:
 
     @pytest.mark.asyncio
     async def test_stats_empty(self, temp_storage):
-        result = await handle_stats(temp_storage)
+        result = await handle_stats(temp_storage, {})
 
         assert result["total_records"] == 0
         assert result["chain_valid"] is True
@@ -257,7 +257,7 @@ class TestHandleStats:
             },
         )
 
-        result = await handle_stats(temp_storage)
+        result = await handle_stats(temp_storage, {})
 
         assert result["total_records"] == 2
         assert result["unique_sessions"] == 1
@@ -443,7 +443,7 @@ class TestHealthCheck:
         """Health endpoint includes chain_verified_at_startup field."""
         from mcp_witness.server import handle_health
 
-        result = await handle_health(temp_storage)
+        result = await handle_health(temp_storage, {})
 
         assert "chain_verified_at_startup" in result
         # Fresh storage should have valid chain at startup or None if not yet checked
@@ -457,7 +457,7 @@ class TestHealthCheck:
         """Health endpoint returns operation status."""
         from mcp_witness.server import handle_health
 
-        result = await handle_health(temp_storage)
+        result = await handle_health(temp_storage, {})
 
         assert "status" in result
         assert result["status"] in ("healthy", "unhealthy")
