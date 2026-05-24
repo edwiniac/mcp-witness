@@ -135,6 +135,7 @@ class SqliteStorage(StorageBackend):
         self._last_record_hash: Optional[str] = None
         self._active_transactions: int = 0
         self._transaction_lock = asyncio.Lock()
+        self._has_fts5: bool = False
 
     async def connect(self) -> None:
         """Connect to the database and ensure schema exists."""
@@ -302,6 +303,9 @@ class SqliteStorage(StorageBackend):
             )
 
         await self._db.commit()
+
+        # Initialize FTS5 full-text search
+        await self._init_fts5()
 
         # Initialize anchor service
         self._anchor_service = AnchorService()
@@ -1028,35 +1032,102 @@ class SqliteStorage(StorageBackend):
         _metrics.records_read.inc(len(rows))
         return [self._row_to_record(row) for row in rows]
 
+    async def _init_fts5(self) -> None:
+        """Initialize FTS5 full-text search if supported by SQLite.
+
+        Creates the virtual table and triggers for automatic index maintenance.
+        Silently degrades if FTS5 is not compiled into the SQLite library.
+        """
+        try:
+            await self._db.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS witness_records_fts "
+                "USING fts5(reasoning, input_data, output_data, "
+                "content='witness_records', content_rowid='rowid')"
+            )
+            # Trigger: after INSERT, populate FTS5 index
+            await self._db.execute(
+                "CREATE TRIGGER IF NOT EXISTS witness_records_fts_ai "
+                "AFTER INSERT ON witness_records "
+                "BEGIN "
+                "  INSERT INTO witness_records_fts(rowid, reasoning, input_data, output_data) "
+                "  VALUES (new.rowid, new.reasoning, new.input_data, new.output_data); "
+                "END;"
+            )
+            # Trigger: after DELETE, remove from FTS5 index
+            await self._db.execute(
+                "CREATE TRIGGER IF NOT EXISTS witness_records_fts_ad "
+                "AFTER DELETE ON witness_records "
+                "BEGIN "
+                "  INSERT INTO witness_records_fts("
+                "    witness_records_fts, rowid, reasoning, input_data, output_data"
+                "  ) "
+                "  VALUES ('delete', old.rowid, old.reasoning, old.input_data, old.output_data); "
+                "END;"
+            )
+            # Trigger: after UPDATE, replace FTS5 index entry
+            await self._db.execute(
+                "CREATE TRIGGER IF NOT EXISTS witness_records_fts_au "
+                "AFTER UPDATE ON witness_records "
+                "BEGIN "
+                "  INSERT INTO witness_records_fts("
+                "    witness_records_fts, rowid, reasoning, input_data, output_data"
+                "  ) "
+                "  VALUES ('delete', old.rowid, old.reasoning, old.input_data, old.output_data); "
+                "  INSERT INTO witness_records_fts(rowid, reasoning, input_data, output_data) "
+                "  VALUES (new.rowid, new.reasoning, new.input_data, new.output_data); "
+                "END;"
+            )
+            await self._db.commit()
+            self._has_fts5 = True
+            logger.info("FTS5 full-text search enabled")
+        except aiosqlite.OperationalError:
+            logger.info("FTS5 not available in this SQLite build; using LIKE-based search")
+
     async def search(
         self,
         query: str,
         limit: int = 50,
         offset: int = 0,
     ) -> list[WitnessRecord]:
-        """Search records using LIKE pattern matching.
+        """Search records using FTS5 full-text index when available.
 
-        Searches across reasoning, input_data, and output_data fields.
-        Consider FTS5 for production-scale usage.
+        Falls back to LIKE pattern matching if FTS5 is not available.
 
         Args:
-            query: Search string (used with LIKE '%query%')
+            query: Search string
             limit: Maximum records to return (default 50)
             offset: Number of records to skip (default 0)
 
         Returns:
-            List of matching WitnessRecords sorted by sequence DESC
+            List of matching WitnessRecords sorted by relevance (FTS5) or sequence DESC
         """
+        if self._has_fts5 and self._db is not None:
+            # Escape double-quotes for FTS5 phrase query safety
+            safe_query = query.replace('"', '""')
+            fts_query = f'"{safe_query}"'
+            try:
+                cursor = await self._db.execute(
+                    "SELECT wr.* FROM witness_records wr "
+                    "INNER JOIN witness_records_fts fts ON wr.rowid = fts.rowid "
+                    "WHERE witness_records_fts MATCH ? "
+                    "ORDER BY rank "
+                    "LIMIT ? OFFSET ?",
+                    (fts_query, limit, offset),
+                )
+                rows = await cursor.fetchall()
+                return [self._row_to_record(row) for row in rows]
+            except aiosqlite.OperationalError:
+                logger.debug("FTS5 query failed, falling back to LIKE")
+
+        # Fallback: LIKE-based search (full table scan)
         pattern = f"%{query}%"
         cursor = await self._db.execute(
-            """
-            SELECT * FROM witness_records
-            WHERE reasoning LIKE ?
-               OR input_data LIKE ?
-               OR output_data LIKE ?
-            ORDER BY sequence DESC
-            LIMIT ? OFFSET ?
-            """,
+            "SELECT * FROM witness_records "
+            "WHERE reasoning LIKE ? "
+            "   OR input_data LIKE ? "
+            "   OR output_data LIKE ? "
+            "ORDER BY sequence DESC "
+            "LIMIT ? OFFSET ?",
             (pattern, pattern, pattern, limit, offset),
         )
         rows = await cursor.fetchall()
