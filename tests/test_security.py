@@ -583,6 +583,26 @@ class TestEncryption:
 
         assert encrypt_field("") == ""
 
+    def test_decrypt_field_logs_on_failure(self, caplog):
+        """decrypt_field logs a warning with error_type when decryption fails."""
+        import logging
+
+        from mcp_witness.security import decrypt_field
+
+        # Bad ciphertext that will fail base64 decode or AES-GCM decrypt
+        bad_ciphertext = "!!!not-valid-base64!!!"
+        with caplog.at_level(logging.WARNING):
+            result = decrypt_field(bad_ciphertext)
+            # Should return the input as-is for backward compatibility
+            assert result == bad_ciphertext
+
+        # Verify the warning was logged
+        assert len(caplog.records) >= 1
+        warning_record = caplog.records[0]
+        assert "decrypt_field failure" in warning_record.message
+        assert hasattr(warning_record, "error_type")
+        assert warning_record.error_type is not None
+
 
 # =========================================================================
 # TASK 1.5: Sensitive Data Scrubbing in Logs
