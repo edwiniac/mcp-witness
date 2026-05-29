@@ -4,11 +4,17 @@ __version__ = "0.9.0"
 
 from . import metrics
 from .anchoring import (
+    AnchorError,
+    AnchorFailureError,
+    AnchorProviderError,
     AnchorReceipt,
     AnchorService,
     AnchorType,
+    IPFSError,
     IPFSProvider,
+    OpenTimestampsError,
     OpenTimestampsProvider,
+    TSAError,
     TSAProvider,
 )
 from .auth import (
@@ -134,4 +140,11 @@ __all__ = [
     "TSAProvider",
     "OpenTimestampsProvider",
     "IPFSProvider",
+    # Anchoring exceptions
+    "AnchorError",
+    "AnchorProviderError",
+    "AnchorFailureError",
+    "TSAError",
+    "OpenTimestampsError",
+    "IPFSError",
 ]

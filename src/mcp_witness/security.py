@@ -12,12 +12,15 @@ Provides:
 
 import base64
 import hashlib
+import ipaddress
 import logging
 import os
 import re
+import socket
 import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Union
+from urllib.parse import urlparse
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -456,6 +459,73 @@ def compute_action_fingerprint(
     """
     payload = f"{action_type}|{session_id}|{input_hash}|{output_hash}|{timestamp}"
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# SSRF Protection for Outbound Webhooks
+# ---------------------------------------------------------------------------
+
+
+def _is_blocked_ip(ip: Union[ipaddress.IPv4Address, ipaddress.IPv6Address]) -> bool:
+    """Return True if *ip* falls in a range that must not be reached from a webhook."""
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
+def validate_external_url(url: str) -> str:
+    """Validate an outbound webhook URL to mitigate SSRF.
+
+    Requires an ``http``/``https`` scheme and a hostname that does not resolve
+    to a loopback, private, link-local, multicast, or reserved address. This
+    prevents a misconfigured or attacker-supplied webhook URL from probing
+    internal services or cloud metadata endpoints (e.g. 169.254.169.254).
+
+    Set ``MCP_WITNESS_ALLOW_INTERNAL_WEBHOOKS=true`` to bypass the check for
+    deployments that legitimately target an internal collector.
+
+    Args:
+        url: The webhook URL to validate.
+
+    Returns:
+        The validated URL unchanged.
+
+    Raises:
+        ValueError: If the URL is malformed or targets a blocked address.
+    """
+    if os.getenv("MCP_WITNESS_ALLOW_INTERNAL_WEBHOOKS", "false").strip().lower() == "true":
+        return url
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Webhook URL must use http or https, got: {parsed.scheme or '(none)'}")
+    host = parsed.hostname
+    if not host:
+        raise ValueError("Webhook URL has no host")
+
+    # Resolve the host to all candidate addresses and reject if ANY is internal.
+    try:
+        infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80))
+    except socket.gaierror as exc:
+        raise ValueError(f"Webhook host could not be resolved: {host}") from exc
+
+    for info in infos:
+        addr = str(info[4][0])
+        try:
+            ip = ipaddress.ip_address(addr.split("%")[0])  # strip IPv6 zone id
+        except ValueError:
+            continue
+        if _is_blocked_ip(ip):
+            raise ValueError(
+                f"Webhook URL resolves to a blocked (internal/loopback) address: {addr}. "
+                "Set MCP_WITNESS_ALLOW_INTERNAL_WEBHOOKS=true to override."
+            )
+    return url
 
 
 # ---------------------------------------------------------------------------

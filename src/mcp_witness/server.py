@@ -56,18 +56,51 @@ MCP_WITNESS_BACKEND = os.getenv("MCP_WITNESS_BACKEND", "sqlite").lower()
 # PostgreSQL connection URL (required when backend is postgresql)
 MCP_WITNESS_PG_URL = os.getenv("MCP_WITNESS_PG_URL", "")
 
-# Graceful shutdown timeout (seconds to wait for in-flight writes)
-SHUTDOWN_TIMEOUT = int(os.getenv("MCP_WITNESS_SHUTDOWN_TIMEOUT", "30"))
 
-# Prometheus metrics port (0 = disabled); empty string treated as 0
-_raw_metrics_port = os.getenv("MCP_WITNESS_METRICS_PORT", "0").strip()
-METRICS_PORT = int(_raw_metrics_port) if _raw_metrics_port.isdigit() else 0
+def _int_env(name: str, default: int, *, minimum: int = 0, maximum: Optional[int] = None) -> int:
+    """Parse an integer environment variable, failing fast on malformed values.
+
+    A misconfigured numeric env var (e.g. a typo'd port) should surface as a
+    clear startup error rather than silently falling back to a default.
+    """
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        raise ValueError(f"{name} must be an integer, got: {raw!r}")
+    if value < minimum or (maximum is not None and value > maximum):
+        bound = f">= {minimum}" if maximum is None else f"in [{minimum}, {maximum}]"
+        raise ValueError(f"{name} must be {bound}, got: {value}")
+    return value
+
+
+# Graceful shutdown timeout (seconds to wait for in-flight writes)
+SHUTDOWN_TIMEOUT = _int_env("MCP_WITNESS_SHUTDOWN_TIMEOUT", 30, minimum=0)
+
+# Prometheus metrics port (0 = disabled)
+METRICS_PORT = _int_env("MCP_WITNESS_METRICS_PORT", 0, minimum=0, maximum=65535)
 
 # Prometheus metrics host (default: loopback only — do not expose to the network)
 METRICS_HOST = os.getenv("MCP_WITNESS_METRICS_HOST", "127.0.0.1")
 
-# When true, refuse to start without a persistent MCP_WITNESS_SIGNING_KEY
-REQUIRE_PERSISTENT_KEY = os.getenv("MCP_WITNESS_REQUIRE_PERSISTENT_KEY", "false").lower() == "true"
+# Secure-by-default: refuse to start without a persistent MCP_WITNESS_SIGNING_KEY
+# (no persistent key = no cross-restart non-repudiation). Set to "false" to allow
+# an ephemeral per-process key (development only).
+REQUIRE_PERSISTENT_KEY = os.getenv("MCP_WITNESS_REQUIRE_PERSISTENT_KEY", "true").lower() == "true"
+
+# Secure-by-default: refuse to start if the hash chain fails verification at
+# startup. Set to "false" to continue in degraded mode (logs a warning instead).
+FAIL_ON_STARTUP_VERIFICATION_FAILURE = (
+    os.getenv("MCP_WITNESS_FAIL_ON_STARTUP_VERIFICATION_FAILURE", "true").lower() == "true"
+)
+
+# When true, refuse to start without an HMAC key (MCP_WITNESS_HMAC_KEY). The
+# default is false because enabling HMAC changes hash computation and would
+# break verification of pre-existing plain-SHA256 chains; opt in for the
+# strictest tamper-resistance.
+REQUIRE_HMAC = os.getenv("MCP_WITNESS_REQUIRE_HMAC", "false").lower() == "true"
 
 # Shutdown state
 _shutting_down = False
@@ -1363,20 +1396,42 @@ async def main():
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(_handle_shutdown(s)))
 
-    # Enforce persistent signing key before touching the database.
+    # Enforce key requirements before touching the database.
     # Checked here (before connect) so no cleanup is needed on failure.
     if REQUIRE_PERSISTENT_KEY and not os.getenv("MCP_WITNESS_SIGNING_KEY", "").strip():
         raise RuntimeError(
-            "MCP_WITNESS_REQUIRE_PERSISTENT_KEY=true but MCP_WITNESS_SIGNING_KEY is not set. "
-            "Non-repudiation requires a persistent 32-byte hex seed. "
-            "Generate one with: openssl rand -hex 32"
+            "MCP_WITNESS_SIGNING_KEY is not set (required by default for non-repudiation). "
+            "Generate a persistent 32-byte hex seed with: openssl rand -hex 32. "
+            "Set MCP_WITNESS_REQUIRE_PERSISTENT_KEY=false to allow an ephemeral "
+            "per-process key (development only)."
+        )
+
+    if REQUIRE_HMAC and not os.getenv("MCP_WITNESS_HMAC_KEY", "").strip():
+        raise RuntimeError(
+            "MCP_WITNESS_REQUIRE_HMAC=true but MCP_WITNESS_HMAC_KEY is not set. "
+            "Generate a 32-byte hex key with: openssl rand -hex 32."
+        )
+    if not os.getenv("MCP_WITNESS_HMAC_KEY", "").strip():
+        logger.warning(
+            "MCP_WITNESS_HMAC_KEY not set — hash chain uses plain SHA-256. "
+            "An actor with database access could recompute hashes and tamper "
+            "with records undetected. Set MCP_WITNESS_HMAC_KEY for tamper-resistance."
         )
 
     await storage.connect()
 
-    # Warn on startup chain verification failure (degraded operation)
+    # Startup chain verification: fail-closed by default (secure-by-default).
     chain_ok = getattr(storage, "_chain_valid_at_startup", None)
     if chain_ok is False:
+        if FAIL_ON_STARTUP_VERIFICATION_FAILURE:
+            await storage.close()
+            raise RuntimeError(
+                "STARTUP CHAIN VERIFICATION FAILED — refusing to start. "
+                "Chain integrity issues were detected. Run `mcp-witness verify` to "
+                "diagnose, restore from a known-good backup, or set "
+                "MCP_WITNESS_FAIL_ON_STARTUP_VERIFICATION_FAILURE=false to start in "
+                "degraded mode."
+            )
         logger.warning(
             "STARTUP CHAIN VERIFICATION FAILED — continuing in degraded mode. "
             "Chain integrity issues detected; signature verification may fail. "

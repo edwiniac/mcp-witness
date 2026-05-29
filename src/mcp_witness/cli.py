@@ -744,7 +744,15 @@ def main():
         "jwt-sign": cmd_jwt_sign,
     }
 
-    commands[args.command](args)
+    try:
+        commands[args.command](args)
+    except (RuntimeError, ValueError) as exc:
+        # Secure-by-default startup checks (missing signing key, invalid config,
+        # failed chain verification) raise here. Surface a clean message.
+        print(f"❌ {exc}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        sys.exit(130)
 
 
 if __name__ == "__main__":

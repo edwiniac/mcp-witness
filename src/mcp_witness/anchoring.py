@@ -85,6 +85,26 @@ def compute_ipfs_cidv1(content: bytes) -> str:
     return "b" + base64.b32encode(cid_bytes).decode("ascii").lower().rstrip("=")
 
 
+class AnchorError(Exception):
+    """Base class for anchoring errors."""
+
+
+class AnchorProviderError(AnchorError):
+    """A specific anchor provider (TSA/OTS/IPFS) failed to produce a receipt."""
+
+
+class TSAError(AnchorProviderError):
+    """RFC 3161 Time-Stamp Authority request failed."""
+
+
+class OpenTimestampsError(AnchorProviderError):
+    """OpenTimestamps (Bitcoin) anchoring failed."""
+
+
+class IPFSError(AnchorProviderError):
+    """IPFS pinning/upload failed."""
+
+
 class AnchorType(str, Enum):
     """Types of external trust anchors."""
 
@@ -358,7 +378,7 @@ class TSAProvider(AnchorProvider):
                     },
                 )
             else:
-                raise Exception(f"TSA returned HTTP {response.status_code}")
+                raise TSAError(f"TSA returned HTTP {response.status_code}")
 
     async def anchor_or_none(self, merkle_root: str, metadata: dict) -> Optional[AnchorReceipt]:
         """
@@ -527,7 +547,7 @@ class OpenTimestampsProvider(AnchorProvider):
             "All OpenTimestamps servers failed for merkle_root=%s",
             merkle_root,
         )
-        raise Exception("All OpenTimestamps servers failed")
+        raise OpenTimestampsError("All OpenTimestamps servers failed")
 
     @staticmethod
     def _ots_parse_varint(data: bytes, offset: int) -> tuple[int, int]:
@@ -727,7 +747,7 @@ class IPFSProvider(AnchorProvider):
             if response.status_code == 200:
                 return response.json()["IpfsHash"]  # type: ignore[no-any-return]
             else:
-                raise Exception(f"Pinata returned {response.status_code}")
+                raise IPFSError(f"Pinata returned {response.status_code}")
 
     def _compute_cid(self, data: dict) -> str:
         """
@@ -797,7 +817,7 @@ class IPFSProvider(AnchorProvider):
                 return False
 
 
-class AnchorFailureError(Exception):
+class AnchorFailureError(AnchorError):
     """Raised when anchoring fails in strict mode."""
 
     def __init__(self, message: str, failures: list[dict]):

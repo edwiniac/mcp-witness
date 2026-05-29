@@ -17,6 +17,7 @@ from typing import Optional
 import httpx
 
 from .models import VerificationResult
+from .security import validate_external_url
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,12 @@ async def notify_chain_failure(
     if not WEBHOOK_URL:
         logger.debug("Webhook URL not configured. Skipping notification.")
         return True
+
+    try:
+        validate_external_url(WEBHOOK_URL)
+    except ValueError as exc:
+        logger.warning("Refusing to send webhook (SSRF guard): %s", exc)
+        return False
 
     payload = {
         "event": "chain_failure",
@@ -134,6 +141,12 @@ class SlackNotifier:
         """
         if not self._url:
             logger.debug("Slack webhook URL not configured. Skipping alert.")
+            return False
+
+        try:
+            validate_external_url(self._url)
+        except ValueError as exc:
+            logger.warning("Refusing to send Slack alert (SSRF guard): %s", exc)
             return False
 
         color = {
