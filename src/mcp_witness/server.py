@@ -13,7 +13,7 @@ import os
 import signal
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Callable, Optional
 from uuid import uuid4
 
 from mcp.server import Server
@@ -514,14 +514,16 @@ def _require_str(value: object, field: str, max_len: int = 0) -> str:
 # ── Tool handler registry ──────────────────────────────────────────────
 # Replaces the giant if/elif chain. Register handlers by tool name.
 
-_TOOL_HANDLERS: dict[str, callable] = {}
+_TOOL_HANDLERS: dict[str, Callable] = {}
 
 
 def _register(name: str):
     """Decorator: register a tool handler by name."""
-    def decorator(handler: callable) -> callable:
+
+    def decorator(handler: Callable) -> Callable:
         _TOOL_HANDLERS[name] = handler
         return handler
+
     return decorator
 
 
@@ -880,7 +882,7 @@ async def handle_export(store: StorageBackend, args: dict) -> dict:
         record_count = 0
         with open(safe_path, "w", encoding="utf-8") as f:
             f.write("{\n")
-            f.write(f'  "export_format": "json",\n')
+            f.write('  "export_format": "json",\n')
             now_iso = datetime.now(timezone.utc).isoformat()
             f.write(f'  "generated_at": "{now_iso}",\n')
             if verification:

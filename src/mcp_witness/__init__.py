@@ -11,7 +11,14 @@ from .anchoring import (
     OpenTimestampsProvider,
     TSAProvider,
 )
-from .auth import AuthRole, authenticate, authorize, create_jwt_token, load_api_keys, verify_jwt_assertion
+from .auth import (
+    AuthRole,
+    authenticate,
+    authorize,
+    create_jwt_token,
+    load_api_keys,
+    verify_jwt_assertion,
+)
 from .buffered import BufferedStorage
 from .compliance import CompliancePreset, get_preset, list_presets
 from .crypto_agility import (

@@ -268,22 +268,52 @@ class TestHandleStats:
 class TestHandleAttest:
     """Tests for handle_attest."""
 
+    @staticmethod
+    def _fake_anchor():
+        """Return an AsyncMock that produces a deterministic TSA receipt.
+
+        Avoids hitting a live RFC 3161 TSA during unit tests.
+        """
+        from datetime import datetime, timezone
+        from unittest.mock import AsyncMock
+
+        from mcp_witness.anchoring import AnchorReceipt, AnchorType
+
+        async def _anchor(merkle_root, metadata=None, anchor_types=None):
+            return [
+                AnchorReceipt(
+                    anchor_type=AnchorType.TSA,
+                    merkle_root=merkle_root,
+                    timestamp=datetime.now(timezone.utc),
+                    receipt_id="test-receipt",
+                    raw_receipt=b"\x00fake-tsa-receipt",
+                )
+            ]
+
+        return AsyncMock(side_effect=_anchor)
+
     @pytest.mark.asyncio
     async def test_attest_specific_record(self, temp_storage):
+        from unittest.mock import patch
+
         record_result = await handle_record(temp_storage, {"action_type": "tool_call"})
         record_id = record_result["record_id"]
 
-        result = await handle_attest(temp_storage, {"record_id": record_id})
+        with patch("mcp_witness.anchoring.AnchorService.anchor", self._fake_anchor()):
+            result = await handle_attest(temp_storage, {"record_id": record_id})
 
         assert result["success"] is True
         assert result["records_attested"] == 1
 
     @pytest.mark.asyncio
     async def test_attest_batch(self, temp_storage):
+        from unittest.mock import patch
+
         await handle_record(temp_storage, {"action_type": "tool_call"})
         await handle_record(temp_storage, {"action_type": "decision"})
 
-        result = await handle_attest(temp_storage, {"batch": True})
+        with patch("mcp_witness.anchoring.AnchorService.anchor", self._fake_anchor()):
+            result = await handle_attest(temp_storage, {"batch": True})
 
         assert result["success"] is True
         assert result["records_attested"] == 2
@@ -305,7 +335,26 @@ class TestCallToolAuth:
 
     @pytest.mark.asyncio
     async def test_call_tool_open_mode(self, temp_storage):
-        """Open mode (no keys) allows all tools."""
+        """Explicit open/admin mode (no keys) allows all tools."""
+        from unittest.mock import patch
+
+        from mcp_witness.server import call_tool
+
+        with patch("mcp_witness.server.get_storage", return_value=temp_storage):
+            # MCP_WITNESS_DEFAULT_ACCESS=admin is resolved at call time, opting
+            # out of the secure deny-by-default behavior for local development.
+            with patch.dict("os.environ", {"MCP_WITNESS_DEFAULT_ACCESS": "admin"}, clear=True):
+                result = await call_tool("witness_stats", {})
+
+        import json
+
+        data = json.loads(result[0].text)
+        assert "total_records" in data or "error" not in data
+
+    @pytest.mark.asyncio
+    async def test_call_tool_deny_by_default(self, temp_storage):
+        """With no auth configured and no override, access is denied (secure default)."""
+        import json
         from unittest.mock import patch
 
         from mcp_witness.server import call_tool
@@ -314,10 +363,9 @@ class TestCallToolAuth:
             with patch.dict("os.environ", {}, clear=True):
                 result = await call_tool("witness_stats", {})
 
-        import json
-
         data = json.loads(result[0].text)
-        assert "total_records" in data or "error" not in data
+        assert "error" in data
+        assert "deny" in data["error"].lower() or "authentication" in data["error"].lower()
 
     @pytest.mark.asyncio
     async def test_call_tool_with_auth_admin(self, temp_storage):

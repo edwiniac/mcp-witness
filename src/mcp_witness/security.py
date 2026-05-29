@@ -17,11 +17,14 @@ import os
 import re
 import warnings
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .models import Sensitivity
+
+if TYPE_CHECKING:
+    from cryptography.hazmat.primitives.asymmetric import ed25519
 
 logger = logging.getLogger(__name__)
 
@@ -54,24 +57,27 @@ _DEK: Optional[bytes] = None
 def get_data_encryption_key() -> bytes:
     """Get or generate the data encryption key for AES-256-GCM.
 
-    Reads from ``MCP_WITNESS_DEK`` env var (32 bytes hex-encoded).
-    If not set, generates a random key (ephemeral per process).
+    Reads from ``MCP_WITNESS_ENCRYPTION_KEY`` (the canonical, documented name)
+    or its backward-compatible alias ``MCP_WITNESS_DEK``. The value must be a
+    32-byte (64 hex char) key. If neither is set, generates a random key
+    (ephemeral per process — sensitive fields cannot be decrypted after restart).
     """
     global _DEK
     if _DEK is not None:
         return _DEK
-    key_hex = os.getenv("MCP_WITNESS_DEK")
+    # MCP_WITNESS_ENCRYPTION_KEY is canonical; MCP_WITNESS_DEK is a legacy alias.
+    key_hex = os.getenv("MCP_WITNESS_ENCRYPTION_KEY") or os.getenv("MCP_WITNESS_DEK")
     if key_hex:
-        _DEK = bytes.fromhex(key_hex)
+        _DEK = bytes.fromhex(key_hex.strip())
         if len(_DEK) != 32:
-            raise ValueError("MCP_WITNESS_DEK must be 32 bytes (64 hex chars)")
+            raise ValueError("MCP_WITNESS_ENCRYPTION_KEY must be 32 bytes (64 hex chars)")
     else:
         _DEK = AESGCM.generate_key(bit_length=256)
         logger.warning(
-            "MCP_WITNESS_DEK not set — using EPHEMERAL encryption key. "
+            "MCP_WITNESS_ENCRYPTION_KEY not set — using EPHEMERAL encryption key. "
             "Sensitive fields encrypted this session CANNOT be decrypted after restart. "
-            "Set MCP_WITNESS_DEK to a persistent 32-byte hex key (openssl rand -hex 32) "
-            "for durable field-level encryption."
+            "Set MCP_WITNESS_ENCRYPTION_KEY to a persistent 32-byte hex key "
+            "(openssl rand -hex 32) for durable field-level encryption."
         )
     return _DEK
 
@@ -104,7 +110,7 @@ def decrypt_field(encrypted: str) -> str:
         raw = base64.b64decode(encrypted)
         nonce, ciphertext = raw[:12], raw[12:]
         aesgcm = AESGCM(key)
-        return aesgcm.decrypt(nonce, ciphertext, None).decode()
+        return str(aesgcm.decrypt(nonce, ciphertext, None).decode())
     except Exception as exc:
         logger.warning("decrypt_field failure: %s", exc, extra={"error_type": type(exc).__name__})
         return encrypted
@@ -252,13 +258,13 @@ def enforce_read_only(tool_name: str) -> None:
 # Ed25519 Signing Key — Non-Repudiation
 # ---------------------------------------------------------------------------
 
-_SIGNING_KEY_UNSET = object()
-_signing_key: object = _SIGNING_KEY_UNSET
-_public_key_bytes: object = _SIGNING_KEY_UNSET
+_signing_initialized: bool = False
+_signing_key: "Optional[ed25519.Ed25519PrivateKey]" = None
+_public_key_bytes: Optional[bytes] = None
 _signing_key_id: Optional[str] = None
 
 
-def get_signing_key() -> Optional[object]:
+def get_signing_key() -> "Optional[ed25519.Ed25519PrivateKey]":
     """Get the Ed25519 signing key for record non-repudiation.
 
     Reads from the ``MCP_WITNESS_SIGNING_KEY`` environment variable.
@@ -280,8 +286,8 @@ def get_signing_key() -> Optional[object]:
         The Ed25519 private key, or ``None`` if no signing key is configured
         and auto-generation is disabled.
     """
-    global _signing_key, _public_key_bytes, _signing_key_id
-    if _signing_key is not _SIGNING_KEY_UNSET:
+    global _signing_key, _public_key_bytes, _signing_key_id, _signing_initialized
+    if _signing_initialized:
         return _signing_key
 
     from cryptography.hazmat.primitives import serialization
@@ -309,6 +315,11 @@ def get_signing_key() -> Optional[object]:
             "Set MCP_WITNESS_SIGNING_KEY to a persistent 32-byte hex key "
             "for deterministic signing with non-repudiation."
         )
+
+    # Mark initialized only after the key was successfully constructed, so a
+    # malformed MCP_WITNESS_SIGNING_KEY re-raises on the next call instead of
+    # silently caching a None key.
+    _signing_initialized = True
 
     # Extract public key bytes
     _public_key_bytes = _signing_key.public_key().public_bytes(
@@ -350,7 +361,7 @@ def get_signing_key_id() -> Optional[str]:
         The key ID string, or ``None`` if not configured or no trust store.
     """
     global _signing_key_id
-    if _signing_key is _SIGNING_KEY_UNSET:
+    if not _signing_initialized:
         # Trigger lazy load
         get_signing_key()
     return _signing_key_id
@@ -365,10 +376,10 @@ def get_public_key_bytes() -> Optional[bytes]:
     Returns:
         Raw public key bytes (32 bytes), or ``None`` if signing is disabled.
     """
-    if _public_key_bytes is _SIGNING_KEY_UNSET:
+    if not _signing_initialized:
         # Trigger lazy loading
         get_signing_key()
-    return _public_key_bytes  # type: ignore[return-value]
+    return _public_key_bytes
 
 
 def get_public_key_hex() -> Optional[str]:

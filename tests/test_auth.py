@@ -27,7 +27,9 @@ def keypair():
     sk = ed25519.Ed25519PrivateKey.generate()
     sk_hex = sk.private_bytes_raw().hex()
     pk = sk.public_key()
-    pk_raw = pk.public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw)
+    pk_raw = pk.public_bytes(
+        encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
+    )
     pk_hex = pk_raw.hex()
     return sk_hex, pk_hex
 
@@ -37,8 +39,9 @@ class TestJWTTokenCreation:
 
     def test_creates_valid_token(self, keypair):
         sk, pk = keypair
-        with mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", sk), mock.patch(
-            "mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", pk
+        with (
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", sk),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", pk),
         ):
             token = create_jwt_token("test-agent", role="writer", ttl_seconds=3600)
             assert token is not None
@@ -52,8 +55,9 @@ class TestJWTTokenCreation:
 
     def test_created_token_can_be_verified(self, keypair):
         sk, pk = keypair
-        with mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", sk), mock.patch(
-            "mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", pk
+        with (
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", sk),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", pk),
         ):
             token = create_jwt_token("agent-7", role="auditor", ttl_seconds=60)
             assert token is not None
@@ -64,9 +68,11 @@ class TestJWTTokenCreation:
 
     def test_includes_issuer_when_configured(self, keypair):
         sk, pk = keypair
-        with mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", sk), mock.patch(
-            "mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", pk
-        ), mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_ISSUER", "mcp-witness"):
+        with (
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", sk),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", pk),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_ISSUER", "mcp-witness"),
+        ):
             token = create_jwt_token("agent-1", issuer="mcp-witness")
             assert token is not None
             payload = verify_jwt_assertion(token)
@@ -83,8 +89,9 @@ class TestJWTVerification:
 
     def test_rejects_bad_signature(self, keypair):
         sk, pk = keypair
-        with mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", sk), mock.patch(
-            "mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", pk
+        with (
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", sk),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", pk),
         ):
             token = create_jwt_token("agent", ttl_seconds=60)
             assert token
@@ -94,8 +101,9 @@ class TestJWTVerification:
 
     def test_rejects_expired_token(self, keypair):
         sk, pk = keypair
-        with mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", sk), mock.patch(
-            "mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", pk
+        with (
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", sk),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", pk),
         ):
             token = create_jwt_token("agent", ttl_seconds=-60)
             assert token
@@ -103,8 +111,9 @@ class TestJWTVerification:
 
     def test_valid_token_passes(self, keypair):
         sk, pk = keypair
-        with mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", sk), mock.patch(
-            "mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", pk
+        with (
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", sk),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", pk),
         ):
             token = create_jwt_token("agent", ttl_seconds=60)
             assert token
@@ -114,28 +123,33 @@ class TestJWTVerification:
 
     def test_rejects_issuer_mismatch(self, keypair):
         sk, pk = keypair
-        with mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", sk), mock.patch(
-            "mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", pk
-        ), mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_ISSUER", "expected-issuer"):
+        with (
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", sk),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", pk),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_ISSUER", "expected-issuer"),
+        ):
             token = create_jwt_token("agent", issuer="wrong-issuer")
             assert token
             assert verify_jwt_assertion(token) is None
 
     def test_rejects_audience_mismatch(self, keypair):
         sk, pk = keypair
-        with mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", sk), mock.patch(
-            "mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", pk
-        ), mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_AUDIENCE", "expected-audience"):
+        with (
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", sk),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", pk),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_AUDIENCE", "expected-audience"),
+        ):
             token = create_jwt_token("agent", audience="wrong-audience")
             assert token
             assert verify_jwt_assertion(token) is None
 
     def test_accepts_matching_issuer_and_audience(self, keypair):
         sk, pk = keypair
-        with mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", sk), mock.patch(
-            "mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", pk
-        ), mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_ISSUER", "my-issuer"), mock.patch(
-            "mcp_witness.auth.MCP_WITNESS_JWT_AUDIENCE", "my-aud"
+        with (
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", sk),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", pk),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_ISSUER", "my-issuer"),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_AUDIENCE", "my-aud"),
         ):
             token = create_jwt_token("agent", issuer="my-issuer", audience="my-aud")
             assert token
@@ -149,39 +163,38 @@ class TestDefaultAccessModes:
     """Tests for deny-by-default access control."""
 
     def test_deny_by_default_when_no_keys(self):
-        with mock.patch(
-            "mcp_witness.auth.DEFAULT_ACCESS_MODE", "deny"
-        ), mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", ""), mock.patch.dict(
-            os.environ, {}, clear=True
-        ), mock.patch(
-            "mcp_witness.auth.load_api_keys", return_value={}
+        with (
+            mock.patch("mcp_witness.auth.DEFAULT_ACCESS_MODE", "deny"),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", ""),
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch("mcp_witness.auth.load_api_keys", return_value={}),
         ):
             with pytest.raises(PermissionError, match="not configured"):
                 authenticate()
 
     def test_admin_mode_for_local_dev(self):
-        with mock.patch(
-            "mcp_witness.auth.DEFAULT_ACCESS_MODE", "admin"
-        ), mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", ""), mock.patch(
-            "mcp_witness.auth.load_api_keys", return_value={}
+        with (
+            mock.patch("mcp_witness.auth.DEFAULT_ACCESS_MODE", "admin"),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", ""),
+            mock.patch("mcp_witness.auth.load_api_keys", return_value={}),
         ):
             role = authenticate()
             assert role == AuthRole.ADMIN
 
     def test_read_only_mode(self):
-        with mock.patch(
-            "mcp_witness.auth.DEFAULT_ACCESS_MODE", "read_only"
-        ), mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", ""), mock.patch(
-            "mcp_witness.auth.load_api_keys", return_value={}
+        with (
+            mock.patch("mcp_witness.auth.DEFAULT_ACCESS_MODE", "read_only"),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", ""),
+            mock.patch("mcp_witness.auth.load_api_keys", return_value={}),
         ):
             role = authenticate()
             assert role == AuthRole.AUDITOR
 
     def test_invalid_default_access_raises(self):
-        with mock.patch(
-            "mcp_witness.auth.DEFAULT_ACCESS_MODE", "wide_open"
-        ), mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", ""), mock.patch(
-            "mcp_witness.auth.load_api_keys", return_value={}
+        with (
+            mock.patch("mcp_witness.auth.DEFAULT_ACCESS_MODE", "wide_open"),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", ""),
+            mock.patch("mcp_witness.auth.load_api_keys", return_value={}),
         ):
             with pytest.raises(PermissionError):
                 authenticate()
@@ -189,8 +202,9 @@ class TestDefaultAccessModes:
     def test_auth_required_raises_when_token_missing(self):
         """When API keys ARE configured but no token provided, should raise."""
         pk = "3b6a27bcceb6a42d62a3a8d02a6f0d7365321571de243a63ac048a18b59da29d"
-        with mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", pk), mock.patch(
-            "mcp_witness.auth.load_api_keys", return_value={}
+        with (
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", pk),
+            mock.patch("mcp_witness.auth.load_api_keys", return_value={}),
         ):
             with mock.patch.dict(os.environ, {}, clear=False):
                 with pytest.raises(PermissionError, match="Authentication required"):
@@ -225,13 +239,16 @@ class TestAPIKeys:
     """Tests for API key loading."""
 
     def test_loads_valid_keys(self):
-        with mock.patch.dict(os.environ, {
-            "MCP_WITNESS_API_KEYS": (
-                "key-admin-1234567890abcd:admin,"
-                "key-audit-1234567890abcd:auditor,"
-                "key-write-1234567890abcd:writer"
-            )
-        }):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "MCP_WITNESS_API_KEYS": (
+                    "key-admin-1234567890abcd:admin,"
+                    "key-audit-1234567890abcd:auditor,"
+                    "key-write-1234567890abcd:writer"
+                )
+            },
+        ):
             keys = load_api_keys()
             assert len(keys) == 3
             assert keys["key-admin-1234567890abcd"] == AuthRole.ADMIN
@@ -239,17 +256,15 @@ class TestAPIKeys:
             assert keys["key-write-1234567890abcd"] == AuthRole.WRITER
 
     def test_skips_short_keys(self):
-        with mock.patch.dict(os.environ, {
-            "MCP_WITNESS_API_KEYS": "short:admin,good-key-1234567890:writer"
-        }):
+        with mock.patch.dict(
+            os.environ, {"MCP_WITNESS_API_KEYS": "short:admin,good-key-1234567890:writer"}
+        ):
             keys = load_api_keys()
             assert "short" not in keys
             assert "good-key-1234567890" in keys
 
     def test_skips_unknown_roles(self):
-        with mock.patch.dict(os.environ, {
-            "MCP_WITNESS_API_KEYS": "test-key-1234567890:superuser"
-        }):
+        with mock.patch.dict(os.environ, {"MCP_WITNESS_API_KEYS": "test-key-1234567890:superuser"}):
             keys = load_api_keys()
             assert len(keys) == 0
 
@@ -266,12 +281,10 @@ class TestCheckAuthConfigured:
     def test_raises_when_required_but_no_keys(self):
         from mcp_witness.auth import check_auth_configured
 
-        with mock.patch(
-            "mcp_witness.auth.REQUIRE_AUTH", True
-        ), mock.patch(
-            "mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", ""
-        ), mock.patch(
-            "mcp_witness.auth.load_api_keys", return_value={}
+        with (
+            mock.patch("mcp_witness.auth.REQUIRE_AUTH", True),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", ""),
+            mock.patch("mcp_witness.auth.load_api_keys", return_value={}),
         ):
             with pytest.raises(RuntimeError, match="no authentication is configured"):
                 check_auth_configured()
@@ -279,16 +292,18 @@ class TestCheckAuthConfigured:
     def test_passes_when_required_and_api_keys_configured(self):
         from mcp_witness.auth import check_auth_configured
 
-        with mock.patch(
-            "mcp_witness.auth.REQUIRE_AUTH", True
-        ), mock.patch(
-            "mcp_witness.auth.load_api_keys",
-            return_value={"test-key-1234567890": AuthRole.WRITER},
+        with (
+            mock.patch("mcp_witness.auth.REQUIRE_AUTH", True),
+            mock.patch(
+                "mcp_witness.auth.load_api_keys",
+                return_value={"test-key-1234567890": AuthRole.WRITER},
+            ),
         ):
             check_auth_configured()  # Should not raise
 
 
 # ── Helper: construct a raw JWT with full control over claims ───────────
+
 
 def _b64url_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
@@ -309,6 +324,7 @@ def _make_raw_jwt(
 
 
 # ── Comprehensive JWT Boundary Tests ────────────────────────────────────
+
 
 class TestJWTBoundaryCases:
     """Comprehensive boundary tests for verify_jwt_assertion strict claim validation.
@@ -332,8 +348,10 @@ class TestJWTBoundaryCases:
 
     def test_jwt_rejects_expired_token(self):
         """Token with exp in the past is rejected."""
-        with mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", self.pk_hex), \
-             mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", self.sk_hex):
+        with (
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", self.pk_hex),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", self.sk_hex),
+        ):
             token = create_jwt_token("agent", ttl_seconds=-1)
             assert token is not None
             assert verify_jwt_assertion(token) is None
@@ -366,9 +384,11 @@ class TestJWTBoundaryCases:
 
     def test_jwt_rejects_wrong_issuer(self):
         """Token with mismatched iss is rejected."""
-        with mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", self.pk_hex), \
-             mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", self.sk_hex), \
-             mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_ISSUER", "expected-issuer"):
+        with (
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", self.pk_hex),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", self.sk_hex),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_ISSUER", "expected-issuer"),
+        ):
             token = create_jwt_token("agent", issuer="wrong-issuer")
             assert token is not None
             assert verify_jwt_assertion(token) is None
@@ -377,9 +397,11 @@ class TestJWTBoundaryCases:
 
     def test_jwt_rejects_wrong_audience(self):
         """Token with mismatched aud is rejected."""
-        with mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", self.pk_hex), \
-             mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", self.sk_hex), \
-             mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_AUDIENCE", "expected-audience"):
+        with (
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", self.pk_hex),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", self.sk_hex),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_AUDIENCE", "expected-audience"),
+        ):
             token = create_jwt_token("agent", audience="wrong-audience")
             assert token is not None
             assert verify_jwt_assertion(token) is None
@@ -437,8 +459,10 @@ class TestJWTBoundaryCases:
 
     def test_jwt_rejects_tampered_signature(self):
         """Modify one byte of signature — token MUST be rejected."""
-        with mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", self.pk_hex), \
-             mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", self.sk_hex):
+        with (
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", self.pk_hex),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", self.sk_hex),
+        ):
             token = create_jwt_token("agent", ttl_seconds=600)
             assert token is not None
             # Modify one byte in the signature part
@@ -452,8 +476,10 @@ class TestJWTBoundaryCases:
 
     def test_jwt_rejects_payload_tampering(self):
         """Modify payload — token MUST be rejected."""
-        with mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", self.pk_hex), \
-             mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", self.sk_hex):
+        with (
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", self.pk_hex),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", self.sk_hex),
+        ):
             token = create_jwt_token("agent", ttl_seconds=600)
             assert token is not None
             parts = token.split(".")
@@ -505,8 +531,10 @@ class TestJWTBoundaryCases:
         header = {"alg": "EdDSA", "typ": "JWT"}
         token = _make_raw_jwt(self.sk, header, payload)
 
-        with mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", self.pk_hex), \
-             mock.patch("mcp_witness.auth.load_api_keys", return_value={}):
+        with (
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", self.pk_hex),
+            mock.patch("mcp_witness.auth.load_api_keys", return_value={}),
+        ):
             # verify_jwt_assertion returns the payload as-is — it's authenticate()
             # that degrades unknown roles to AUDITOR
             result = verify_jwt_assertion(token)
@@ -521,12 +549,19 @@ class TestJWTBoundaryCases:
 
     def test_jwt_create_and_verify_roundtrip(self):
         """Create token with create_jwt_token(), verify with verify_jwt_assertion()."""
-        with mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", self.pk_hex), \
-             mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", self.sk_hex), \
-             mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_ISSUER", "test-issuer"), \
-             mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_AUDIENCE", "test-aud"):
-            token = create_jwt_token("agent-42", role="admin", ttl_seconds=3600,
-                                     issuer="test-issuer", audience="test-aud")
+        with (
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", self.pk_hex),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PRIVATE_KEY", self.sk_hex),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_ISSUER", "test-issuer"),
+            mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_AUDIENCE", "test-aud"),
+        ):
+            token = create_jwt_token(
+                "agent-42",
+                role="admin",
+                ttl_seconds=3600,
+                issuer="test-issuer",
+                audience="test-aud",
+            )
             assert token is not None
             payload = verify_jwt_assertion(token)
             assert payload is not None
@@ -585,10 +620,7 @@ class TestJWTBoundaryCases:
 
     def test_jwt_rejects_garbage_payload(self):
         """Token with non-JSON payload is rejected."""
-        now = int(time.time())
-        header_b64 = _b64url_encode(
-            json.dumps({"alg": "EdDSA", "typ": "JWT"}).encode()
-        )
+        header_b64 = _b64url_encode(json.dumps({"alg": "EdDSA", "typ": "JWT"}).encode())
         garbage_payload = _b64url_encode(b"not-json")
         message = f"{header_b64}.{garbage_payload}".encode()
         sig_b64 = _b64url_encode(self.sk.sign(message))

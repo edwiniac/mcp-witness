@@ -91,15 +91,9 @@ async def _load_dashboard(store) -> dict:
             "unique_sessions": stats.unique_sessions,
             "unique_actors": stats.unique_actors,
             "first_record": (
-                stats.first_record_time.isoformat()
-                if stats.first_record_time
-                else None
+                stats.first_record_time.isoformat() if stats.first_record_time else None
             ),
-            "last_record": (
-                stats.last_record_time.isoformat()
-                if stats.last_record_time
-                else None
-            ),
+            "last_record": (stats.last_record_time.isoformat() if stats.last_record_time else None),
             "attested_records": stats.attested_records,
             "actions_by_type": stats.records_by_action_type,
             "sensitivity_levels": stats.records_by_sensitivity,
