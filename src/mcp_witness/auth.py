@@ -64,6 +64,8 @@ _READ_TOOLS = frozenset(
         "witness_checkpoints",
         "witness_proof",
         "witness_metrics",
+        "witness_health",
+        "witness_search",
     }
 )
 
@@ -74,6 +76,7 @@ _WRITE_TOOLS = frozenset(
         "witness_anchor",
         "witness_backfill",
         "witness_configure_compliance",
+        "witness_delete",
     }
 )
 

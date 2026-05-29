@@ -576,11 +576,10 @@ async def call_tool(name: str, arguments: object) -> list[TextContent]:
                 )
             ]
 
-        # Authenticate and authorize
+        # Authenticate, then reject unknown tools before the authorization
+        # check so callers get an accurate "unknown tool" error rather than a
+        # misleading permission denial.
         role = authenticate()
-        authorize(role, name)
-
-        store = await get_storage()
 
         handler = _TOOL_HANDLERS.get(name)
         if handler is None:
@@ -590,6 +589,10 @@ async def call_tool(name: str, arguments: object) -> list[TextContent]:
                     text=json.dumps({"error": f"Unknown tool: {name}"}),
                 )
             ]
+
+        authorize(role, name)
+
+        store = await get_storage()
 
         result = await handler(store, arguments)
         return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]

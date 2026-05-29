@@ -62,7 +62,7 @@ jobs:
             --cov=mcp_witness \
             --cov-report=term-missing \
             --cov-report=xml \
-            --cov-fail-under=65 \
+            --cov-fail-under=80 \
             --ignore=tests/test_storage_pg.py
 
       - name: Upload coverage to Codecov
