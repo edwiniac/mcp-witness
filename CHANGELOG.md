@@ -2,6 +2,69 @@
 
 All notable changes to mcp-witness.
 
+## [1.0.0] — 2026-05-29
+
+First production-stable release. This release flips several defaults to
+**secure-by-default** and completes the ASSURANCE-3 hardening.
+
+### ⚠️ Breaking changes
+Each new default can be reverted with the noted environment variable; all log a
+clear message at startup.
+- **Persistent signing key now required by default.** The server refuses to start
+  without `MCP_WITNESS_SIGNING_KEY` (no persistent key = no cross-restart
+  non-repudiation). Override: `MCP_WITNESS_REQUIRE_PERSISTENT_KEY=false`.
+- **Startup chain verification is fail-closed by default.** A corrupt/invalid
+  chain aborts startup instead of continuing in degraded mode. Override:
+  `MCP_WITNESS_FAIL_ON_STARTUP_VERIFICATION_FAILURE=false`.
+- **Invalid numeric config now fails fast** (e.g. a malformed
+  `MCP_WITNESS_METRICS_PORT` raises at startup instead of silently disabling).
+
+### Added
+- **SSRF protection** for `MCP_WITNESS_WEBHOOK_URL` and
+  `MCP_WITNESS_SLACK_WEBHOOK_URL`: outbound notifications to loopback, private,
+  link-local, or cloud-metadata addresses are blocked. Override:
+  `MCP_WITNESS_ALLOW_INTERNAL_WEBHOOKS=true`.
+- **`MCP_WITNESS_REQUIRE_HMAC`** opt-in to refuse startup without an HMAC key; a
+  warning is logged whenever the chain runs in plain-SHA256 mode.
+- **Domain-specific anchoring exceptions** (`AnchorError`, `AnchorProviderError`,
+  `TSAError`, `OpenTimestampsError`, `IPFSError`) replacing bare `Exception`.
+- **`docs/configuration.md`** — complete reference for all environment variables.
+- One-time loud warning when running with unauthenticated `admin`/`read_only`
+  default access.
+
+### Fixed
+- **Encryption-at-rest env var mismatch.** The documented
+  `MCP_WITNESS_ENCRYPTION_KEY` is now the canonical name the code reads (with
+  `MCP_WITNESS_DEK` kept as a backward-compatible alias). Previously the code
+  only read `MCP_WITNESS_DEK`, so users following the docs stored PII in plaintext.
+- **RBAC authorization gap.** `witness_health`, `witness_delete`, and
+  `witness_search` were registered tools but absent from every role, making them
+  uncallable via `call_tool` (even for admin). They are now mapped (delete is a
+  write tool).
+- **Unknown-tool reporting.** `call_tool` now returns "Unknown tool" for
+  unregistered names instead of a misleading permission error.
+- Authentication default-access mode is resolved at call time so it honors the
+  environment in embedded/test contexts.
+- Fire-and-forget webhook notifications are now tracked tasks with exception
+  logging (no more orphaned task exceptions at shutdown).
+- Restored a green CI baseline (lint, format, types, tests).
+
+### Changed
+- `__version__` is now sourced from installed package metadata (single source of
+  truth in `pyproject.toml`).
+- Test suite expanded to 570+ tests; coverage gate raised from 65% to 80%.
+- Classifier promoted to `Development Status :: 5 - Production/Stable`.
+
+### Upgrading from 0.9.x
+1. Generate and set a signing key: `export MCP_WITNESS_SIGNING_KEY=$(openssl rand -hex 32)`
+   (or set `MCP_WITNESS_REQUIRE_PERSISTENT_KEY=false` to keep ephemeral keys).
+2. If you relied on `MCP_WITNESS_DEK`, it still works, but prefer
+   `MCP_WITNESS_ENCRYPTION_KEY`.
+3. If a webhook targets an internal collector, set
+   `MCP_WITNESS_ALLOW_INTERNAL_WEBHOOKS=true`.
+4. Ensure your existing chain verifies (`mcp-witness verify`) before upgrading, or
+   set `MCP_WITNESS_FAIL_ON_STARTUP_VERIFICATION_FAILURE=false`.
+
 ## [0.9.0] — 2026-05-18
 
 ### Adversarial Hardening (v1.0 P0 items — 13 of 14 complete)
