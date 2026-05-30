@@ -99,8 +99,9 @@ class TestAuthenticate:
 
     def test_open_mode_none(self):
         """No API keys configured → deny by default (v1.0 hardened)."""
-        with patch.dict(os.environ, {}, clear=True), patch(
-            "mcp_witness.auth.DEFAULT_ACCESS_MODE", "deny"
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("mcp_witness.auth.DEFAULT_ACCESS_MODE", "deny"),
         ):
             with pytest.raises(PermissionError, match="not configured"):
                 authenticate()
@@ -184,14 +185,15 @@ class TestAuthenticate:
 
     def test_deprecated_read_only(self):
         """READ_ONLY_MODE without keys → deny by default (explicit opt-in needed)."""
-        with patch.dict(
-            os.environ,
-            {
-                "MCP_WITNESS_READ_ONLY": "true",
-            },
-            clear=True,
-        ), patch(
-            "mcp_witness.auth.DEFAULT_ACCESS_MODE", "deny"
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "MCP_WITNESS_READ_ONLY": "true",
+                },
+                clear=True,
+            ),
+            patch("mcp_witness.auth.DEFAULT_ACCESS_MODE", "deny"),
         ):
             with pytest.raises(PermissionError, match="not configured"):
                 authenticate()
@@ -305,8 +307,9 @@ class TestBackwardCompat:
 
     def test_no_api_keys_full_access(self):
         """No MCP_WITNESS_API_KEYS → deny by default (v1.0 hardened)."""
-        with patch.dict(os.environ, {}, clear=True), patch(
-            "mcp_witness.auth.DEFAULT_ACCESS_MODE", "deny"
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("mcp_witness.auth.DEFAULT_ACCESS_MODE", "deny"),
         ):
             with pytest.raises(PermissionError, match="not configured"):
                 authenticate()
@@ -315,8 +318,9 @@ class TestBackwardCompat:
         """Old enforce_read_only raised when deny-by-default is active."""
         from mcp_witness.security import enforce_read_only
 
-        with patch.dict(os.environ, {}, clear=True), patch(
-            "mcp_witness.auth.DEFAULT_ACCESS_MODE", "deny"
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("mcp_witness.auth.DEFAULT_ACCESS_MODE", "deny"),
         ):
             with warnings.catch_warnings(record=True):
                 warnings.simplefilter("always")
@@ -620,7 +624,13 @@ class TestLogFilter:
 
         filt = SensitiveDataFilter()
         record = logging.LogRecord(
-            "test", logging.INFO, "file.py", 10, "api_key=abcdef1234567890abcdef1234567890", (), None
+            "test",
+            logging.INFO,
+            "file.py",
+            10,
+            "api_key=abcdef1234567890abcdef1234567890",
+            (),
+            None,
         )
         filt.filter(record)
         assert "[CREDENTIAL]" in record.msg
@@ -801,8 +811,10 @@ class TestJWTAssertions:
 
         from mcp_witness.auth import create_jwt_token, verify_jwt_assertion
 
-        with patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", self.public_hex), \
-             patch("mcp_witness.auth.MCP_WITNESS_JWT_MAX_AGE", -1):  # any age is too old
+        with (
+            patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", self.public_hex),
+            patch("mcp_witness.auth.MCP_WITNESS_JWT_MAX_AGE", -1),
+        ):  # any age is too old
             token = create_jwt_token(
                 subject="agent-7", role="writer", ttl_seconds=3600, private_key_hex=self.private_hex
             )
@@ -812,8 +824,6 @@ class TestJWTAssertions:
 
     def test_jwt_not_before_future_rejected(self):
         """Token with nbf in the future is rejected."""
-        import json
-        import time
 
         from mcp_witness.auth import create_jwt_token, verify_jwt_assertion
 
@@ -831,8 +841,10 @@ class TestJWTAssertions:
         """authenticate() correctly identifies role from JWT."""
         from mcp_witness.auth import authenticate, create_jwt_token
 
-        with patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", self.public_hex), \
-             patch.dict("os.environ", {"MCP_WITNESS_API_KEYS": ""}):
+        with (
+            patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", self.public_hex),
+            patch.dict("os.environ", {"MCP_WITNESS_API_KEYS": ""}),
+        ):
             token = create_jwt_token(
                 subject="agent-7", role="writer", private_key_hex=self.private_hex
             )
@@ -845,8 +857,10 @@ class TestJWTAssertions:
         """JWT with unknown role value defaults to AUDITOR."""
         from mcp_witness.auth import authenticate, create_jwt_token
 
-        with patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", self.public_hex), \
-             patch.dict("os.environ", {"MCP_WITNESS_API_KEYS": ""}):
+        with (
+            patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", self.public_hex),
+            patch.dict("os.environ", {"MCP_WITNESS_API_KEYS": ""}),
+        ):
             token = create_jwt_token(
                 subject="agent-7", role="writer", private_key_hex=self.private_hex
             )
@@ -860,8 +874,10 @@ class TestJWTAssertions:
         from mcp_witness.auth import authenticate
 
         api_key = "test-key-1234567890abcdef"
-        with patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", self.public_hex), \
-             patch.dict("os.environ", {"MCP_WITNESS_API_KEYS": f"{api_key}:writer"}):
+        with (
+            patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", self.public_hex),
+            patch.dict("os.environ", {"MCP_WITNESS_API_KEYS": f"{api_key}:writer"}),
+        ):
             # Provide invalid JWT + valid API key
             role = authenticate(token=api_key)
             assert role == AuthRole.WRITER  # falls back to API key

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mcp-witness"
-version = "0.9.0"
+version = "1.0.0"
 description = "Immutable audit trail MCP server for AI decisions - cryptographic proof of what your AI did, when, and why"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["mcp", "audit", "compliance", "soc2", "hipaa", "gdpr", "ai", "logging", "immutable"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.10",
@@ -73,14 +73,10 @@ target-version = ['py310']
 source = ["src/mcp_witness"]
 branch = true
 omit = [
-    # Integration / end-to-end modules (tested via CI jobs, not unit tests)
-    "src/mcp_witness/cli.py",
-    "src/mcp_witness/storage_pg.py",       # Requires PostgreSQL (tested in test-postgres job)
+    # Backends / web servers exercised by dedicated CI jobs, not unit tests
+    "src/mcp_witness/storage_pg.py",       # Requires PostgreSQL (test-postgres job)
     "src/mcp_witness/dashboard/server.py",  # Web server (tested via dashboard job)
     "src/mcp_witness/dashboard/__init__.py",
-    "src/mcp_witness/logging.py",           # Config helper, tested implicitly
-    "src/mcp_witness/webhook.py",            # I/O tested via integration
-    "src/mcp_witness/reports/__init__.py",   # HTML/PDF generation (tested via report job)
 ]
 
 [tool.bandit]

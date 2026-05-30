@@ -1,17 +1,37 @@
 """MCP Witness - Immutable audit trail for AI decisions."""
 
-__version__ = "0.9.0"
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
+
+try:
+    # Single source of truth: the installed package metadata (pyproject.toml).
+    __version__ = _pkg_version("mcp-witness")
+except PackageNotFoundError:  # pragma: no cover - only when running from a non-installed tree
+    __version__ = "1.0.0"
 
 from . import metrics
 from .anchoring import (
+    AnchorError,
+    AnchorFailureError,
+    AnchorProviderError,
     AnchorReceipt,
     AnchorService,
     AnchorType,
+    IPFSError,
     IPFSProvider,
+    OpenTimestampsError,
     OpenTimestampsProvider,
+    TSAError,
     TSAProvider,
 )
-from .auth import AuthRole, authenticate, authorize, create_jwt_token, load_api_keys, verify_jwt_assertion
+from .auth import (
+    AuthRole,
+    authenticate,
+    authorize,
+    create_jwt_token,
+    load_api_keys,
+    verify_jwt_assertion,
+)
 from .buffered import BufferedStorage
 from .compliance import CompliancePreset, get_preset, list_presets
 from .crypto_agility import (
@@ -127,4 +147,11 @@ __all__ = [
     "TSAProvider",
     "OpenTimestampsProvider",
     "IPFSProvider",
+    # Anchoring exceptions
+    "AnchorError",
+    "AnchorProviderError",
+    "AnchorFailureError",
+    "TSAError",
+    "OpenTimestampsError",
+    "IPFSError",
 ]

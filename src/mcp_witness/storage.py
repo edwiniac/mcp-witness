@@ -64,6 +64,38 @@ from .storage_base import StorageBackend
 
 logger = logging.getLogger(__name__)
 
+# Strong references to fire-and-forget background tasks. asyncio only keeps a
+# weak reference to scheduled tasks, so without this set a task can be garbage
+# collected mid-flight. The done-callback logs any exception (otherwise it would
+# surface only as an "exception was never retrieved" warning at shutdown).
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_tracked(coro) -> Optional[asyncio.Task]:
+    """Schedule *coro* as a tracked background task with exception logging.
+
+    Returns the created Task, or ``None`` if no event loop is running.
+    """
+    try:
+        task = asyncio.ensure_future(coro)
+    except RuntimeError:
+        # No running event loop — caller is in a sync context; skip silently.
+        logger.debug("No running event loop; background task not scheduled")
+        return None
+
+    _background_tasks.add(task)
+
+    def _on_done(t: asyncio.Task) -> None:
+        _background_tasks.discard(t)
+        if not t.cancelled():
+            exc = t.exception()
+            if exc is not None:
+                logger.warning("Background task failed: %s", exc, exc_info=exc)
+
+    task.add_done_callback(_on_done)
+    return task
+
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -1321,15 +1353,13 @@ class SqliteStorage(StorageBackend):
                 from .webhook import is_webhook_configured, notify_chain_failure
 
                 if is_webhook_configured():
-                    import asyncio
-
-                    asyncio.create_task(notify_chain_failure(result))
+                    _spawn_tracked(notify_chain_failure(result))
 
                 # Also try Slack notification
                 try:
                     from .webhook import notify_chain_failure_slack
 
-                    asyncio.create_task(notify_chain_failure_slack(result))
+                    _spawn_tracked(notify_chain_failure_slack(result))
                 except Exception:
                     pass  # nosec B110 — webhook is optional; import or call failure is non-fatal
             except Exception:
@@ -1738,7 +1768,7 @@ class SqliteStorage(StorageBackend):
                 from .webhook import is_webhook_configured, notify_chain_failure
 
                 if is_webhook_configured():
-                    asyncio.ensure_future(notify_chain_failure(result))
+                    _spawn_tracked(notify_chain_failure(result))
             except Exception:
                 logger.debug("Webhook notification skipped")
 

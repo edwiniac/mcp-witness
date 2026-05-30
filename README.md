@@ -4,7 +4,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![MCP](https://img.shields.io/badge/MCP-Compatible-purple.svg)](https://modelcontextprotocol.io)
-[![Version](https://img.shields.io/badge/version-0.9.0-orange.svg)](https://pypi.org/project/mcp-witness/)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://pypi.org/project/mcp-witness/)
 [![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 **Cryptographic proof of every AI decision.** An immutable, verifiable audit trail MCP server — because "trust me bro" isn't SOC2 compliant.
@@ -39,10 +39,14 @@ AI agents make decisions. Regulators ask questions. mcp-witness provides **crypt
 | Level | Description | Current |
 |-------|-------------|---------|
 | ASSURANCE-1 | Best-effort logging, no cryptographic guarantees | — |
-| ASSURANCE-2 | Hash chain + Merkle trees, tamper-EVIDENT, configurable anchoring | **v0.9.0** |
-| ASSURANCE-3 | Non-repudiation (Ed25519), strict anchoring, encryption at rest, formal threat model | **Target: v1.0** |
+| ASSURANCE-2 | Hash chain + Merkle trees, tamper-EVIDENT, configurable anchoring | ✓ |
+| ASSURANCE-3 | Non-repudiation (Ed25519), strict anchoring, encryption at rest, formal threat model | **v1.0.0** |
 
-### ⚠️ Current Limitations (v0.9.0 → v1.0)
+As of **v1.0.0**, mcp-witness is **secure-by-default**: it refuses to start without a
+persistent signing key and fails closed if the chain does not verify at startup. Each
+default has an opt-out — see [docs/configuration.md](docs/configuration.md).
+
+### ⚠️ Known Limitations
 
 **Anchoring is asynchronous.** Records are created first, then anchored later when a
 checkpoint triggers `AnchorService`. Between record creation and checkpoint anchoring,
@@ -53,16 +57,23 @@ records immediately.
 No built-in replication, clustering, or HA. Back up your database regularly.
 See [docs/backup.md](docs/backup.md).
 
-**Encryption at rest requires configuration.** Compliance presets reference AES-256-GCM
-but encryption is NOT active by default. Set `MCP_WITNESS_ENCRYPTION_KEY` to enable
-field-level envelope encryption. Without it, sensitive fields are stored as plaintext
-JSON.
+**Encryption at rest is opt-in.** Set `MCP_WITNESS_ENCRYPTION_KEY` (32-byte hex) to
+enable AES-256-GCM field-level envelope encryption. Without it, sensitive fields are
+stored as plaintext JSON.
 
-**Non-repudiation requires persistent keys.** Ed25519 signing is implemented but defaults
-to an ephemeral (per-process) key. Set `MCP_WITNESS_SIGNING_KEY` to a fixed 32-byte
-hex key for verifiable non-repudiation across sessions.
+### ⬆️ Upgrading from 0.9.x
 
-See [SECURITY.md](SECURITY.md) for the full threat model.
+v1.0.0 changes several defaults. To upgrade smoothly:
+
+1. Set a signing key: `export MCP_WITNESS_SIGNING_KEY=$(openssl rand -hex 32)`
+   (or `MCP_WITNESS_REQUIRE_PERSISTENT_KEY=false` to keep ephemeral keys).
+2. Verify your chain first: `mcp-witness verify` (or set
+   `MCP_WITNESS_FAIL_ON_STARTUP_VERIFICATION_FAILURE=false`).
+3. If a webhook targets an internal collector, set
+   `MCP_WITNESS_ALLOW_INTERNAL_WEBHOOKS=true`.
+
+See the [full configuration reference](docs/configuration.md) and
+[SECURITY.md](SECURITY.md) for the threat model.
 
 ## 🚀 30-Second Quickstart
 
@@ -226,7 +237,8 @@ Single record: **O(log n)** with Merkle proof (vs O(n) linear scan).
 
 - **SHA-256 hash chain** with null-byte delimiters to prevent collision attacks
 - **Ed25519 JWT assertions** — signed JSON Web Tokens as alternative to shared API keys
-- **Ed25519 record signing** — auto-generated ephemeral keys, configurable via env var
+- **Ed25519 record signing** — persistent signing key required by default for non-repudiation (`MCP_WITNESS_SIGNING_KEY`)
+- **SSRF-guarded webhooks** — alert URLs are blocked from reaching internal/metadata addresses
 - **HMAC key protection** — optional server-side secret makes hashes un-recomputable
 - **RFC 3161 TSA anchoring** — legal-grade timestamps (strict mode; local attestation in degraded mode)
 - **OpenTimestamps** — structural verification (full Bitcoin confirmation requires external OTS client)
@@ -299,6 +311,7 @@ pytest --ignore=tests/test_storage_pg.py  # Skip PG (needs PostgreSQL)
 - [x] Adversarial hardening — TSA strict mode, canonical signing, crypto agility, key lifecycle (v0.9.0)
 - [x] Merkle proof strict validation + envelope encryption + metrics (v0.9.0)
 - [x] PostgreSQL full backend parity + sensitive data log scrubbing (v0.9.0)
+- [x] Secure-by-default hardening — required signing key, fail-closed startup, SSRF guard, ASSURANCE-3 (v1.0.0)
 - [ ] Streaming architecture (Kafka/NATS)
 - [ ] AWS KMS / cloud HSM signing
 - [ ] Grafana/Prometheus metrics endpoint

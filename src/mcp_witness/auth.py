@@ -64,6 +64,8 @@ _READ_TOOLS = frozenset(
         "witness_checkpoints",
         "witness_proof",
         "witness_metrics",
+        "witness_health",
+        "witness_search",
     }
 )
 
@@ -74,6 +76,7 @@ _WRITE_TOOLS = frozenset(
         "witness_anchor",
         "witness_backfill",
         "witness_configure_compliance",
+        "witness_delete",
     }
 )
 
@@ -107,6 +110,45 @@ DEFAULT_ACCESS_MODE = os.getenv("MCP_WITNESS_DEFAULT_ACCESS", "deny").lower()
 # If true and no API keys or JWT keys are configured, raise RuntimeError.
 REQUIRE_AUTH = os.getenv("MCP_WITNESS_REQUIRE_AUTH", "false").lower() == "true"
 
+# One-time guard so the "unauthenticated access" warning is not emitted on
+# every single tool call.
+_unauth_access_warned = False
+
+
+def _default_access_mode() -> str:
+    """Resolve the effective default access mode at call time.
+
+    Reads ``MCP_WITNESS_DEFAULT_ACCESS`` from the environment if present, so
+    the value can be configured after import (e.g. in tests or wrappers that
+    set the variable late). Falls back to the module-level ``DEFAULT_ACCESS_MODE``
+    constant, which remains patchable for unit tests.
+    """
+    env = os.getenv("MCP_WITNESS_DEFAULT_ACCESS")
+    if env is not None:
+        return env.strip().lower()
+    return DEFAULT_ACCESS_MODE
+
+
+def _warn_unauthenticated_access(mode: str) -> None:
+    """Emit a prominent one-time warning when running without authentication."""
+    global _unauth_access_warned
+    if _unauth_access_warned:
+        return
+    _unauth_access_warned = True
+    if mode == "admin":
+        logger.warning(
+            "⚠️  No authentication configured — running in OPEN ADMIN mode "
+            "(MCP_WITNESS_DEFAULT_ACCESS=admin). This is UNSAFE for production: "
+            "ALL tools are accessible without authentication. Set MCP_WITNESS_API_KEYS "
+            "or MCP_WITNESS_DEFAULT_ACCESS=deny for production use."
+        )
+    else:
+        logger.warning(
+            "No authentication configured — running in READ-ONLY mode "
+            "(MCP_WITNESS_DEFAULT_ACCESS=read_only). All write operations will be "
+            "denied. Set MCP_WITNESS_API_KEYS for full access control."
+        )
+
 
 def check_auth_configured() -> None:
     """Verify authentication is configured if required.
@@ -126,13 +168,11 @@ def check_auth_configured() -> None:
         )
     if not api_keys and MCP_WITNESS_JWT_PUBLIC_KEY:
         logger.info(
-            "JWT authentication configured (no API keys). "
-            "MCP_WITNESS_DEFAULT_ACCESS=%s", DEFAULT_ACCESS_MODE
+            "JWT authentication configured (no API keys). " "MCP_WITNESS_DEFAULT_ACCESS=%s",
+            DEFAULT_ACCESS_MODE,
         )
     if api_keys and not MCP_WITNESS_JWT_PUBLIC_KEY:
-        logger.info(
-            "API key authentication configured (%d keys).", len(api_keys)
-        )
+        logger.info("API key authentication configured (%d keys).", len(api_keys))
 
 
 def create_jwt_token(
@@ -280,6 +320,9 @@ def verify_jwt_assertion(token: str) -> Optional[dict]:
             payload = json.loads(payload_bytes)
         except json.JSONDecodeError:
             logger.warning("JWT payload is not valid JSON")
+            return None
+        if not isinstance(payload, dict):
+            logger.warning("JWT payload is not a JSON object")
             return None
 
         # Required claims
@@ -463,31 +506,24 @@ def authenticate(token: Optional[str] = None) -> AuthRole:
             "See https://github.com/edwiniac/mcp-witness#authentication for setup instructions."
         )
 
-    # No keys configured: use default access mode
-    if DEFAULT_ACCESS_MODE == "deny":
+    # No keys configured: use default access mode (resolved at call time)
+    access_mode = _default_access_mode()
+    if access_mode == "deny":
         raise PermissionError(
             "Authentication is not configured and MCP_WITNESS_DEFAULT_ACCESS=deny. "
             "Set MCP_WITNESS_API_KEYS to enable authentication, "
             "or set MCP_WITNESS_DEFAULT_ACCESS=read_only for read-only access, "
             "or MCP_WITNESS_DEFAULT_ACCESS=admin for local development only."
         )
-    if DEFAULT_ACCESS_MODE == "read_only":
-        logger.warning(
-            "No authentication configured — running in READ-ONLY mode. "
-            "All write operations will be denied. "
-            "Set MCP_WITNESS_API_KEYS for full access control."
-        )
+    if access_mode == "read_only":
+        _warn_unauthenticated_access(access_mode)
         return AuthRole.AUDITOR
-    if DEFAULT_ACCESS_MODE == "admin":
-        logger.warning(
-            "⚠️  No authentication configured — running in OPEN ADMIN mode. "
-            "This is UNSAFE for production. ALL tools are accessible without authentication. "
-            "Set MCP_WITNESS_API_KEYS or MCP_WITNESS_DEFAULT_ACCESS=deny for production use."
-        )
+    if access_mode == "admin":
+        _warn_unauthenticated_access(access_mode)
         return AuthRole.ADMIN
 
     raise PermissionError(
-        f"Invalid MCP_WITNESS_DEFAULT_ACCESS value: '{DEFAULT_ACCESS_MODE}'. "
+        f"Invalid MCP_WITNESS_DEFAULT_ACCESS value: '{access_mode}'. "
         f"Valid options: deny, read_only, admin"
     )
 

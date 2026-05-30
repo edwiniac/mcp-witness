@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any, Optional
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_serializer
+from pydantic import BaseModel, Field, model_serializer
 
 
 class ActionType(str, Enum):

@@ -28,7 +28,7 @@ FROM python:3.12-slim
 # Metadata
 LABEL org.opencontainers.image.title="mcp-witness"
 LABEL org.opencontainers.image.description="Immutable audit trail MCP server for AI decisions"
-LABEL org.opencontainers.image.version="0.9.0"
+LABEL org.opencontainers.image.version="1.0.0"
 LABEL org.opencontainers.image.source="https://github.com/edwiniac/mcp-witness"
 LABEL org.opencontainers.image.licenses="MIT"
 
