@@ -6,6 +6,7 @@
 [![MCP](https://img.shields.io/badge/MCP-Compatible-purple.svg)](https://modelcontextprotocol.io)
 [![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://pypi.org/project/mcp-witness/)
 [![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![SafeSkill 50/100](https://img.shields.io/badge/SafeSkill-50%2F100_Use%20with%20Caution-orange)](https://safeskill.dev/scan/edwiniac-mcp-witness)
 
 **Cryptographic proof of every AI decision.** An immutable, verifiable audit trail MCP server — because "trust me bro" isn't SOC2 compliant.
 
