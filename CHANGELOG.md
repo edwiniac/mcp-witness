@@ -32,7 +32,38 @@ clear message at startup.
 - One-time loud warning when running with unauthenticated `admin`/`read_only`
   default access.
 
+### Security (pre-release audit hardening)
+- **Constant-time comparisons everywhere.** API key lookup, record hash
+  verification, chain-link checks, and Merkle root comparisons now use
+  `hmac.compare_digest` to eliminate timing side channels.
+- **Hash-chain delimiter injection closed.** `actor_id` now rejects control
+  characters (including `\x00`, the record-hash field delimiter), so two
+  distinct records can no longer produce the same hash payload.
+- **Merkle proof input validation.** Proof verification rejects truncated or
+  malformed (non-64-hex) leaf/sibling hashes and out-of-range leaf indices,
+  preventing ambiguous-split forgeries in `hash_pair` concatenation.
+- **Signed webhooks.** Set `MCP_WITNESS_WEBHOOK_SECRET` to sign chain-failure
+  notifications with HMAC-SHA256 (`X-Witness-Signature` header); payloads now
+  include a server-side `sent_at` timestamp for replay detection.
+- **Revoked keys excluded from trust lineage.** `KeyTrustStore.verify_key_chain`
+  no longer treats revoked keys as authorised, and is robust to cyclic
+  rotation chains.
+- **Dashboard XSS hardening.** All record/checkpoint values rendered by the
+  dashboard are HTML-escaped; CSS class tokens are sanitized; error messages
+  render via `textContent`. Compliance-report checkpoint fields and tag
+  classes are likewise escaped.
+- **Export symlink race (TOCTOU) closed.** File exports open with
+  `O_NOFOLLOW`, so a symlink swapped in after path validation is rejected.
+- **CI dependency audit enforced.** `pip-audit` failures now fail the
+  security job instead of being swallowed by an output pipe.
+
 ### Fixed
+- **Buffered storage flush loop.** The background flush loop busy-spun at
+  100% CPU when idle, and a flush exceeding the interval was cancelled
+  mid-write — losing dequeued records and leaving callers hung. The loop now
+  waits on a stop event, never cancels an in-progress flush, and drains the
+  full queue (in `batch_size` chunks) on shutdown.
+- **Dashboard version badge** updated from v0.3.0 to v1.0.0.
 - **Encryption-at-rest env var mismatch.** The documented
   `MCP_WITNESS_ENCRYPTION_KEY` is now the canonical name the code reads (with
   `MCP_WITNESS_DEK` kept as a backward-compatible alias). Previously the code

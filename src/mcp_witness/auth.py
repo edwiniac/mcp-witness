@@ -28,6 +28,7 @@ Environment variables:
 """
 
 import base64
+import hmac
 import json
 import logging
 import os
@@ -436,11 +437,21 @@ def load_api_keys() -> dict[str, AuthRole]:
 
 
 def _lookup_api_key(token: str) -> Optional[AuthRole]:
-    """Check if a token matches a configured API key. Returns role or None."""
+    """Check if a token matches a configured API key. Returns role or None.
+
+    Compares the token against every configured key with
+    ``hmac.compare_digest`` so the lookup time does not depend on how many
+    characters of a key the caller guessed correctly (timing-attack safe).
+    """
     if not token:
         return None
     api_keys = load_api_keys()
-    return api_keys.get(token)
+    matched_role: Optional[AuthRole] = None
+    token_bytes = token.encode("utf-8")
+    for key, role in api_keys.items():
+        if hmac.compare_digest(token_bytes, key.encode("utf-8")):
+            matched_role = role
+    return matched_role
 
 
 def authenticate(token: Optional[str] = None) -> AuthRole:

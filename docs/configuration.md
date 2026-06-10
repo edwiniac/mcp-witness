@@ -73,6 +73,7 @@ export MCP_WITNESS_API_KEYS="<32+char-key>:admin"        # authentication
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MCP_WITNESS_WEBHOOK_URL` | — | URL POSTed on chain-failure detection. Validated against the SSRF guard. |
+| `MCP_WITNESS_WEBHOOK_SECRET` | — | When set, webhook payloads are signed with HMAC-SHA256; the signature is sent as `X-Witness-Signature: sha256=<hex>` (computed over the raw request body). |
 | `MCP_WITNESS_SLACK_WEBHOOK_URL` | — | Slack incoming-webhook URL for formatted alerts. Validated against the SSRF guard. |
 | `MCP_WITNESS_ALLOW_INTERNAL_WEBHOOKS` | `false` | If `true`, allow webhook URLs that resolve to loopback/private/link-local addresses (otherwise blocked to prevent SSRF). |
 

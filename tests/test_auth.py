@@ -647,3 +647,30 @@ class TestJWTBoundaryCases:
         """Verification returns None when no public key is configured."""
         with mock.patch("mcp_witness.auth.MCP_WITNESS_JWT_PUBLIC_KEY", ""):
             assert verify_jwt_assertion("any.token.here") is None
+
+
+class TestLookupApiKeyConstantTime:
+    """_lookup_api_key compares against every key with compare_digest."""
+
+    def test_valid_key_matches(self, monkeypatch):
+        from mcp_witness.auth import AuthRole, _lookup_api_key
+
+        monkeypatch.setenv(
+            "MCP_WITNESS_API_KEYS",
+            "abcdefghijklmnop:admin,qrstuvwxyz123456:auditor",
+        )
+        assert _lookup_api_key("abcdefghijklmnop") == AuthRole.ADMIN
+        assert _lookup_api_key("qrstuvwxyz123456") == AuthRole.AUDITOR
+
+    def test_wrong_key_returns_none(self, monkeypatch):
+        from mcp_witness.auth import _lookup_api_key
+
+        monkeypatch.setenv("MCP_WITNESS_API_KEYS", "abcdefghijklmnop:admin")
+        assert _lookup_api_key("abcdefghijklmnoX") is None
+        assert _lookup_api_key("") is None
+
+    def test_prefix_of_valid_key_returns_none(self, monkeypatch):
+        from mcp_witness.auth import _lookup_api_key
+
+        monkeypatch.setenv("MCP_WITNESS_API_KEYS", "abcdefghijklmnop:admin")
+        assert _lookup_api_key("abcdefghijklmno") is None

@@ -386,3 +386,59 @@ class TestStrictMerkleProof:
             )
             is False
         )
+
+
+class TestProofHashValidation:
+    """Proof hashes must be full-length SHA-256 hex digests."""
+
+    @staticmethod
+    def make_tree(n):
+        hashes = [f"hash_{i}" for i in range(n)]
+        tree = build_merkle_tree(hashes)
+        proof = get_merkle_proof(tree, 0)
+        return tree, proof
+
+    def test_verify_rejects_truncated_leaf_hash(self):
+        """A truncated (non-64-hex) leaf hash is rejected."""
+        from mcp_witness.merkle import verify_merkle_proof
+
+        tree, proof = self.make_tree(4)
+        assert verify_merkle_proof(proof.leaf_hash[:32], proof.proof_path, tree.root) is False
+
+    def test_verify_rejects_truncated_sibling_hash(self):
+        """A truncated sibling hash in the proof path is rejected."""
+        from mcp_witness.merkle import verify_merkle_proof
+
+        tree, proof = self.make_tree(4)
+        bad_path = [dict(step) for step in proof.proof_path]
+        bad_path[0]["hash"] = bad_path[0]["hash"][:32]
+        assert verify_merkle_proof(proof.leaf_hash, bad_path, tree.root) is False
+
+    def test_verify_rejects_uppercase_hex(self):
+        """Uppercase hex is rejected (canonical form is lowercase)."""
+        from mcp_witness.merkle import verify_merkle_proof
+
+        tree, proof = self.make_tree(4)
+        assert verify_merkle_proof(proof.leaf_hash.upper(), proof.proof_path, tree.root) is False
+
+    def test_strict_rejects_out_of_range_leaf_index(self):
+        """Strict: leaf_index >= tree_size is rejected."""
+        from mcp_witness.merkle import verify_merkle_proof_strict
+
+        tree, proof = self.make_tree(4)
+        assert (
+            verify_merkle_proof_strict(proof.leaf_hash, 4, proof.proof_path, tree.root, tree_size=4)
+            is False
+        )
+
+    def test_strict_rejects_truncated_leaf_hash(self):
+        """Strict: truncated leaf hash is rejected."""
+        from mcp_witness.merkle import verify_merkle_proof_strict
+
+        tree, proof = self.make_tree(4)
+        assert (
+            verify_merkle_proof_strict(
+                proof.leaf_hash[:32], 0, proof.proof_path, tree.root, tree_size=4
+            )
+            is False
+        )

@@ -891,3 +891,31 @@ class TestJWTAssertions:
             assert verify_jwt_assertion("a.b") is None  # only 2 parts
             assert verify_jwt_assertion("a.b.c.d") is None  # 4 parts
             assert verify_jwt_assertion("") is None
+
+
+class TestActorIdControlChars:
+    """actor_id must not contain control characters (hash delimiter safety)."""
+
+    @staticmethod
+    def _validate(**kwargs):
+        from mcp_witness.security import validate_inputs
+
+        validate_inputs(**kwargs)
+
+    def test_rejects_null_byte(self):
+        with pytest.raises(ValueError, match="control characters"):
+            self._validate(actor_id="evil\x00actor")
+
+    def test_rejects_newline(self):
+        with pytest.raises(ValueError, match="control characters"):
+            self._validate(actor_id="evil\nactor")
+
+    def test_rejects_del(self):
+        with pytest.raises(ValueError, match="control characters"):
+            self._validate(actor_id="evil\x7factor")
+
+    def test_allows_email_style_actor(self):
+        self._validate(actor_id="user@example.com")
+
+    def test_allows_unicode_actor(self):
+        self._validate(actor_id="agent-Ω")
