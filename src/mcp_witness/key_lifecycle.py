@@ -150,22 +150,26 @@ class KeyTrustStore:
         Starting from the current key, follows ``next_key_id`` references
         backwards (via the chain). Returns ``True`` if ``key_id`` is found
         in the chain. This ensures the key used to sign is part of the
-        authorised rotation lineage.
+        authorised rotation lineage. Revoked keys are never part of the
+        authorised lineage, even if they appear in the rotation chain.
 
         Args:
             key_id: The key identifier to trace.
 
         Returns:
-            ``True`` if the key is in the authorised key chain.
+            ``True`` if the key is in the authorised key chain and not revoked.
         """
         if not self._current_key_id:
             return False
 
-        # Build a set of all keys in the chain (forward from start)
+        # Build a set of all non-revoked keys in the chain (forward from start)
         chain_keys: set[str] = set()
+        seen: set[str] = set()
         current: Optional[str] = self._current_key_id
-        while current and current in self._keys:
-            chain_keys.add(current)
+        while current and current in self._keys and current not in seen:
+            seen.add(current)
+            if not self._keys[current].revoked:
+                chain_keys.add(current)
             current = self._keys[current].next_key_id
 
         return key_id in chain_keys

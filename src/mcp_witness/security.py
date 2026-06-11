@@ -572,6 +572,10 @@ def validate_export_path(output_path: str) -> Path:
 
 SESSION_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_\-:.]*$")
 TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_\-:.]*$")
+# Control characters (C0 + DEL) are forbidden in actor_id: the record hash
+# payload uses \x00 as its field delimiter, so an embedded NUL (or any control
+# char) would allow crafting two distinct records with the same hash payload.
+ACTOR_ID_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 MAX_SESSION_ID_LENGTH = 256
 MAX_ACTOR_ID_LENGTH = 256
 MAX_TOOL_NAME_LENGTH = 256
@@ -596,6 +600,8 @@ def validate_inputs(
 
     if actor_id and len(actor_id) > MAX_ACTOR_ID_LENGTH:
         raise ValueError(f"actor_id exceeds max length {MAX_ACTOR_ID_LENGTH}")
+    if actor_id and ACTOR_ID_CONTROL_CHARS.search(actor_id):
+        raise ValueError("actor_id contains control characters")
 
     if tool_name is not None:
         if len(tool_name) > MAX_TOOL_NAME_LENGTH:

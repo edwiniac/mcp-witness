@@ -93,8 +93,10 @@ def compute_record_hash(
     # - Hex hashes ([0-9a-f]+) never contain \x00
     # - ISO 8601 timestamps never contain \x00
     # - Sequence numbers (decimal integers) never contain \x00
-    # - Actor/action/tool name strings validated by validate_inputs()
+    # - Action/tool name strings validated by validate_inputs()
     #   allow only alphanumeric and [_-:.] characters
+    # - actor_id is validated by validate_inputs() to contain no
+    #   control characters (including \x00)
     # Unlike "|", \x00 cannot appear in any component value, so it
     # prevents hash collision attacks via delimiter injection.
     payload = "\x00".join(components)
@@ -141,7 +143,7 @@ def verify_record_hash(
         tool_name=tool_name,
         hmac_key=hmac_key,
     )
-    return record_hash == expected
+    return hmac.compare_digest(record_hash, expected)
 
 
 def verify_chain_link(current_hash: str, next_prev_hash: str) -> bool:
@@ -155,7 +157,7 @@ def verify_chain_link(current_hash: str, next_prev_hash: str) -> bool:
     Returns:
         True if the chain link is valid
     """
-    return current_hash == next_prev_hash
+    return hmac.compare_digest(current_hash, next_prev_hash)
 
 
 # Genesis hash for the first record in a chain.

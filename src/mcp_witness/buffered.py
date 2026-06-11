@@ -86,6 +86,7 @@ class BufferedStorage(StorageBackend):
         )
         self._flush_task: Optional[asyncio.Task] = None
         self._running = False
+        self._stop_event: Optional[asyncio.Event] = None
 
     @property
     def backend(self) -> StorageBackend:
@@ -100,6 +101,7 @@ class BufferedStorage(StorageBackend):
         """Connect the underlying backend and start the flush task."""
         await self._backend.connect()
         self._running = True
+        self._stop_event = asyncio.Event()
         self._flush_task = asyncio.create_task(self._flush_loop())
         logger.info(
             "BufferedStorage started (batch_size=%d, flush_interval=%.2fs)",
@@ -108,11 +110,17 @@ class BufferedStorage(StorageBackend):
         )
 
     async def close(self) -> None:
-        """Flush remaining records and shut down the flush task."""
+        """Flush remaining records and shut down the flush task.
+
+        The flush task is signalled to stop (not cancelled) so that an
+        in-progress flush always completes — cancelling mid-flush would
+        leave already-dequeued records unresolved and lost.
+        """
         self._running = False
 
         if self._flush_task is not None:
-            self._flush_task.cancel()
+            if self._stop_event is not None:
+                self._stop_event.set()
             try:
                 await self._flush_task
             except asyncio.CancelledError:
@@ -130,55 +138,58 @@ class BufferedStorage(StorageBackend):
     # ------------------------------------------------------------------
 
     async def _flush_loop(self) -> None:
-        """Background task: periodically flushes the queue."""
+        """Background task: flushes the queue every ``flush_interval`` seconds.
+
+        Waits on the stop event with a timeout rather than sleeping, so a
+        shutdown wakes the loop immediately and the final flush still runs.
+        """
+        assert self._stop_event is not None
         while self._running:
             try:
-                await asyncio.wait_for(
-                    self._flush_now(),
-                    timeout=self._flush_interval,
-                )
+                await asyncio.wait_for(self._stop_event.wait(), timeout=self._flush_interval)
             except asyncio.TimeoutError:
-                # Timeout means no records to flush within interval,
-                # which is expected when idle. Continue loop.
-                pass
+                pass  # Normal periodic wakeup
+            try:
+                await self._flush_now()
             except Exception:
                 logger.exception("Unexpected error in flush loop")
-                await asyncio.sleep(self._flush_interval)
 
     async def _flush_now(self) -> None:
-        """Drain the queue and write all pending records.
+        """Drain the queue completely and write all pending records.
 
-        Uses the underlying backend's ``batch_record()`` for efficient
-        batch insertion in a single transaction. Handles errors gracefully:
-        records that fail to write are logged and their futures are
-        completed with the exception, allowing callers to handle failures.
+        Writes in chunks of ``batch_size`` using the underlying backend's
+        ``batch_record()`` for efficient insertion in a single transaction.
+        Handles errors gracefully: records that fail to write are logged and
+        their futures are completed with the exception, allowing callers to
+        handle failures.
         """
-        batch: list[_BufferedRecord] = []
+        while True:
+            batch: list[_BufferedRecord] = []
 
-        # Drain the queue without blocking
-        try:
-            while len(batch) < self._batch_size:
-                item = self._queue.get_nowait()
-                batch.append(item)
-        except asyncio.QueueEmpty:
-            pass
+            # Drain up to batch_size items without blocking
+            try:
+                while len(batch) < self._batch_size:
+                    item = self._queue.get_nowait()
+                    batch.append(item)
+            except asyncio.QueueEmpty:
+                pass
 
-        if not batch:
-            return
+            if not batch:
+                return
 
-        logger.debug("Flushing %d buffered records", len(batch))
+            logger.debug("Flushing %d buffered records", len(batch))
 
-        # Collect all kwargs and batch-insert in one transaction
-        kwargs_list = [item.kwargs for item in batch]
-        try:
-            records = await self._backend.batch_record(kwargs_list)
-            for item, record in zip(batch, records):
-                item.future.set_result(record)
-        except Exception as e:
-            logger.error("Failed to flush buffered records: %s", e)
-            for item in batch:
-                if not item.future.done():
-                    item.future.set_exception(e)
+            # Collect all kwargs and batch-insert in one transaction
+            kwargs_list = [item.kwargs for item in batch]
+            try:
+                records = await self._backend.batch_record(kwargs_list)
+                for item, record in zip(batch, records):
+                    item.future.set_result(record)
+            except Exception as e:
+                logger.error("Failed to flush buffered records: %s", e)
+                for item in batch:
+                    if not item.future.done():
+                        item.future.set_exception(e)
 
     # ------------------------------------------------------------------
     # Record (buffered)

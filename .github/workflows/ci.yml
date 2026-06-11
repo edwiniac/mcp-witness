@@ -160,7 +160,9 @@ jobs:
         run: |
           uv pip install --system pip-audit
           uv pip install --system -e ".[dev,postgres]"
-          pip-audit 2>&1 | tail -20
+          # No pipe here: piping to tail would swallow pip-audit's exit code
+          # and let known-vulnerable dependencies pass CI silently.
+          pip-audit
 
   # ── SBOM (Software Bill of Materials) ──────────────────────────────────────
   sbom:

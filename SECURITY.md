@@ -1,8 +1,8 @@
-# Security Threat Model — mcp-witness v0.9.0
+# Security Threat Model — mcp-witness v1.0.0
 
-**Status:** Draft for adversarial hardening review  
-**Last updated:** 2026-05-12  
-**Version:** Applicable to v0.9.0 codebase
+**Status:** Current  
+**Last updated:** 2026-06-10  
+**Version:** Applicable to v1.0.0 codebase
 
 ---
 
@@ -168,7 +168,7 @@
 
 ## 6. Assurance Level Statement
 
-**Current assurance level (v0.9.0): ASSURANCE-2 (Tamper-Evident) → targeting ASSURANCE-3 for v1.0**
+**Current assurance level (v1.0.0): ASSURANCE-3 (Adversary-Resistant) when configured with persistent keys (signing + HMAC + encryption) and external anchoring**
 
 - Cryptographic hash chain provides tamper evidence
 - Ed25519 signatures provide non-repudiation within a single key lifetime

@@ -6,12 +6,19 @@ to a configured webhook URL (e.g., Slack, Discord, or custom endpoint).
 
 Configure via MCP_WITNESS_WEBHOOK_URL env var.
 
+When MCP_WITNESS_WEBHOOK_SECRET is set, outbound payloads are signed with
+HMAC-SHA256 (``X-Witness-Signature: sha256=<hex>`` header) so receivers can
+verify authenticity and reject forged or replayed notifications.
+
 Slack alerts can be configured separately via MCP_WITNESS_SLACK_WEBHOOK_URL.
 """
 
+import hashlib
+import hmac
+import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -23,6 +30,19 @@ logger = logging.getLogger(__name__)
 
 # Webhook URL from environment
 WEBHOOK_URL = os.getenv("MCP_WITNESS_WEBHOOK_URL", "").strip()
+
+
+def _sign_payload(body: bytes) -> Optional[str]:
+    """Compute an HMAC-SHA256 signature for a webhook body.
+
+    Returns ``sha256=<hex>`` when MCP_WITNESS_WEBHOOK_SECRET is configured,
+    otherwise ``None`` (unsigned, backward-compatible).
+    """
+    secret = os.getenv("MCP_WITNESS_WEBHOOK_SECRET", "").strip()
+    if not secret:
+        return None
+    digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    return f"sha256={digest}"
 
 
 def is_webhook_configured() -> bool:
@@ -58,12 +78,14 @@ async def notify_chain_failure(
         logger.warning("Refusing to send webhook (SSRF guard): %s", exc)
         return False
 
+    sent_at = datetime.now(timezone.utc).isoformat()
     payload = {
         "event": "chain_failure",
         "severity": "warning",
         "records_checked": result.records_checked,
         "issues": result.issues,
         "verified_at": result.verified_at.isoformat(),
+        "sent_at": sent_at,
         "context": context or {},
     }
 
@@ -72,15 +94,22 @@ async def notify_chain_failure(
         len(result.issues),
     )
 
+    body = json.dumps(payload, default=str).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "mcp-witness-webhook/1.0",
+        "X-Witness-Timestamp": sent_at,
+    }
+    signature = _sign_payload(body)
+    if signature:
+        headers["X-Witness-Signature"] = signature
+
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 WEBHOOK_URL,
-                json=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "User-Agent": "mcp-witness-webhook/1.0",
-                },
+                content=body,
+                headers=headers,
             )
 
         if response.is_success:

@@ -865,16 +865,7 @@ async def handle_export(store: StorageBackend, args: dict) -> dict:
     if args.get("to_time"):
         to_time = datetime.fromisoformat(args["to_time"].replace("Z", "+00:00"))
 
-    records = await store.query(
-        from_time=from_time,
-        to_time=to_time,
-        limit=MAX_QUERY_LIMIT,
-    )
-
-    # Filter by session if specified
     session_ids = args.get("session_ids", [])
-    if session_ids:
-        records = [r for r in records if r.session_id in session_ids]
 
     include_verification = args.get("include_verification", True)
     verification = None
@@ -884,6 +875,13 @@ async def handle_export(store: StorageBackend, args: dict) -> dict:
     export_format = args.get("format", "json")
 
     if export_format == "summary":
+        records = await store.query(
+            from_time=from_time,
+            to_time=to_time,
+            limit=MAX_QUERY_LIMIT,
+        )
+        if session_ids:
+            records = [r for r in records if r.session_id in session_ids]
         return {
             "export_format": "summary",
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -916,7 +914,14 @@ async def handle_export(store: StorageBackend, args: dict) -> dict:
         # materializing all records in memory at once.
         safe_path = validate_export_path(output_path)
         record_count = 0
-        with open(safe_path, "w", encoding="utf-8") as f:
+
+        def _open_no_symlink(path: str, flags: int) -> int:
+            # O_NOFOLLOW closes the TOCTOU window between path validation and
+            # open: a symlink swapped in after validation is rejected instead
+            # of followed outside the allowed export directory.
+            return os.open(path, flags | getattr(os, "O_NOFOLLOW", 0))
+
+        with open(safe_path, "w", encoding="utf-8", opener=_open_no_symlink) as f:
             f.write("{\n")
             f.write('  "export_format": "json",\n')
             now_iso = datetime.now(timezone.utc).isoformat()

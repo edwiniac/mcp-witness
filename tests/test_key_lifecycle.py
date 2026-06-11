@@ -262,3 +262,62 @@ def _make_file(data: dict) -> str:
     json.dump(data, tmp)
     tmp.close()
     return tmp.name
+
+
+class TestRevokedKeyLineage:
+    """Revoked keys must not be part of the authorised key chain."""
+
+    def test_revoked_key_in_chain_rejected(self):
+        data = {
+            "keys": {
+                "key-a": {
+                    "public_key_hex": "a" * 64,
+                    "not_before": "2025-01-01T00:00:00+00:00",
+                    "revoked": True,
+                    "revoked_at": "2025-06-01T00:00:00+00:00",
+                    "next_key_id": "key-b",
+                },
+                "key-b": {
+                    "public_key_hex": "b" * 64,
+                    "not_before": "2025-06-01T00:00:00+00:00",
+                    "revoked": False,
+                },
+            },
+            "current_key_id": "key-a",
+        }
+        path = _make_store_file(data)
+        try:
+            store = KeyTrustStore(path)
+            # key-a is revoked: not authorised even though it heads the chain
+            assert store.verify_key_chain("key-a") is False
+            # key-b is in the lineage and not revoked
+            assert store.verify_key_chain("key-b") is True
+        finally:
+            os.unlink(path)
+
+    def test_cyclic_chain_terminates(self):
+        data = {
+            "keys": {
+                "key-a": {
+                    "public_key_hex": "a" * 64,
+                    "not_before": "2025-01-01T00:00:00+00:00",
+                    "revoked": False,
+                    "next_key_id": "key-b",
+                },
+                "key-b": {
+                    "public_key_hex": "b" * 64,
+                    "not_before": "2025-06-01T00:00:00+00:00",
+                    "revoked": False,
+                    "next_key_id": "key-a",
+                },
+            },
+            "current_key_id": "key-a",
+        }
+        path = _make_store_file(data)
+        try:
+            store = KeyTrustStore(path)
+            assert store.verify_key_chain("key-a") is True
+            assert store.verify_key_chain("key-b") is True
+            assert store.verify_key_chain("key-missing") is False
+        finally:
+            os.unlink(path)

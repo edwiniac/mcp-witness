@@ -343,3 +343,64 @@ class TestNotifyChainFailureSlack:
         ):
             assert await notify_chain_failure_slack(_make_result()) is True
             mock_post.assert_awaited_once()
+
+
+class TestWebhookHmacSignature:
+    """HMAC signing of outbound webhook payloads."""
+
+    async def test_signature_header_when_secret_set(self, monkeypatch):
+        """X-Witness-Signature is sent when MCP_WITNESS_WEBHOOK_SECRET is set."""
+        import hashlib
+        import hmac as hmac_mod
+
+        monkeypatch.delenv("MCP_WITNESS_ALLOW_INTERNAL_WEBHOOKS", raising=False)
+        monkeypatch.setenv("MCP_WITNESS_WEBHOOK_SECRET", "topsecret")
+        monkeypatch.setattr("mcp_witness.security.socket.getaddrinfo", _public_addrinfo)
+        with (
+            patch("mcp_witness.webhook.WEBHOOK_URL", "https://hooks.example.com/x"),
+            patch(
+                "httpx.AsyncClient.post",
+                new=AsyncMock(return_value=_mock_response(True, 200)),
+            ) as mock_post,
+        ):
+            assert await notify_chain_failure(_make_result()) is True
+            _, kwargs = mock_post.await_args
+            headers = kwargs["headers"]
+            body = kwargs["content"]
+            expected = hmac_mod.new(b"topsecret", body, hashlib.sha256).hexdigest()
+            assert headers["X-Witness-Signature"] == f"sha256={expected}"
+            assert "X-Witness-Timestamp" in headers
+
+    async def test_no_signature_header_without_secret(self, monkeypatch):
+        """No signature header is sent when the secret is unset."""
+        monkeypatch.delenv("MCP_WITNESS_ALLOW_INTERNAL_WEBHOOKS", raising=False)
+        monkeypatch.delenv("MCP_WITNESS_WEBHOOK_SECRET", raising=False)
+        monkeypatch.setattr("mcp_witness.security.socket.getaddrinfo", _public_addrinfo)
+        with (
+            patch("mcp_witness.webhook.WEBHOOK_URL", "https://hooks.example.com/x"),
+            patch(
+                "httpx.AsyncClient.post",
+                new=AsyncMock(return_value=_mock_response(True, 200)),
+            ) as mock_post,
+        ):
+            assert await notify_chain_failure(_make_result()) is True
+            _, kwargs = mock_post.await_args
+            assert "X-Witness-Signature" not in kwargs["headers"]
+
+    async def test_payload_includes_sent_at(self, monkeypatch):
+        """The payload body includes a server-side sent_at timestamp."""
+        import json as json_mod
+
+        monkeypatch.delenv("MCP_WITNESS_ALLOW_INTERNAL_WEBHOOKS", raising=False)
+        monkeypatch.setattr("mcp_witness.security.socket.getaddrinfo", _public_addrinfo)
+        with (
+            patch("mcp_witness.webhook.WEBHOOK_URL", "https://hooks.example.com/x"),
+            patch(
+                "httpx.AsyncClient.post",
+                new=AsyncMock(return_value=_mock_response(True, 200)),
+            ) as mock_post,
+        ):
+            assert await notify_chain_failure(_make_result()) is True
+            _, kwargs = mock_post.await_args
+            payload = json_mod.loads(kwargs["content"])
+            assert "sent_at" in payload

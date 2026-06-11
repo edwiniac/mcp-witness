@@ -8,12 +8,23 @@ See: https://en.wikipedia.org/wiki/Merkle_tree#Second_preimage_attack
 """
 
 import hashlib
+import re
 from dataclasses import dataclass
 from typing import Optional
 
 # Domain separation prefixes to prevent second-preimage attacks
 LEAF_PREFIX = b"\x00"
 NODE_PREFIX = b"\x01"
+
+# SHA-256 hex digest: exactly 64 lowercase hex characters. Proof hashes must
+# match this exactly — hash_pair() concatenates the two hex strings, so
+# variable-length inputs would make the (left, right) split ambiguous.
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _is_valid_hash(value: object) -> bool:
+    """Check that a proof element is a full-length SHA-256 hex digest."""
+    return isinstance(value, str) and bool(_SHA256_HEX.match(value))
 
 
 # Zero-leaf constant for Merkle tree padding.
@@ -176,6 +187,9 @@ def verify_merkle_proof(leaf_hash: str, proof_path: list[dict], expected_root: s
     Returns:
         True if the proof is valid
     """
+    if not _is_valid_hash(leaf_hash):
+        return False
+
     # Validate proof_path entries
     for step in proof_path:
         if not isinstance(step, dict):
@@ -183,6 +197,8 @@ def verify_merkle_proof(leaf_hash: str, proof_path: list[dict], expected_root: s
         if "hash" not in step or "position" not in step:
             return False
         if step["position"] not in ("left", "right"):
+            return False
+        if not _is_valid_hash(step["hash"]):
             return False
 
     current = leaf_hash
@@ -225,8 +241,11 @@ def verify_merkle_proof_strict(
     Returns:
         True if the proof is valid under all strict checks.
     """
-    # Reject negative leaf_index
-    if leaf_index < 0:
+    # Reject out-of-range leaf_index
+    if leaf_index < 0 or leaf_index >= tree_size:
+        return False
+
+    if not _is_valid_hash(leaf_hash):
         return False
 
     # Reject empty proof_path for non-trivial trees
@@ -248,6 +267,8 @@ def verify_merkle_proof_strict(
         if "hash" not in step or "position" not in step:
             return False
         if step["position"] not in ("left", "right"):
+            return False
+        if not _is_valid_hash(step["hash"]):
             return False
 
     # Compute the root

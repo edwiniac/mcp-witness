@@ -117,3 +117,56 @@ async def test_buffered_get_stats(buffered_storage):
 async def test_buffered_is_subclass_of_storage_backend(buffered_storage):
     """BufferedStorage implements StorageBackend."""
     assert isinstance(buffered_storage, StorageBackend)
+
+
+@pytest.mark.asyncio
+async def test_close_drains_queue_larger_than_batch_size():
+    """close() flushes ALL queued records, even beyond one batch."""
+    if not BUFFERED_AVAILABLE:
+        pytest.skip("BufferedStorage not available (missing dependency)")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test_drain.db"
+        backend = SqliteStorage(db_path)
+        await backend.connect()
+        buffered = BufferedStorage(backend=backend, batch_size=3, flush_interval=60.0)
+        await buffered.connect()
+
+        tasks = [
+            asyncio.create_task(
+                buffered.record(
+                    action_type=ActionType.DECISION,
+                    actor_id="drain-test",
+                    session_id="drain",
+                )
+            )
+            for _ in range(10)
+        ]
+        # Let all records enqueue before shutdown (long interval: no auto-flush)
+        await asyncio.sleep(0.05)
+
+        await buffered.close()
+        records = await asyncio.gather(*tasks)
+        assert len(records) == 10
+        assert all(r.record_hash for r in records)
+
+        await backend.connect()
+        stats = await backend.get_stats()
+        assert stats.total_records == 10
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_flush_loop_idles_without_busy_spin(buffered_storage):
+    """The flush loop sleeps between intervals instead of spinning."""
+    flushes = 0
+    original = buffered_storage._flush_now
+
+    async def counting_flush():
+        nonlocal flushes
+        flushes += 1
+        await original()
+
+    buffered_storage._flush_now = counting_flush
+    await asyncio.sleep(0.35)
+    # flush_interval is 0.1s: expect ~3 wakeups, not hundreds
+    assert flushes <= 10

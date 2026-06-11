@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -1107,7 +1108,7 @@ class PgStorage(StorageBackend):
                     hmac_key=get_hmac_key(),
                 )
 
-                if record.record_hash != expected_hash:
+                if not hmac.compare_digest(record.record_hash, expected_hash):
                     if first_invalid is None:
                         first_invalid = record.sequence
                     issues.append(
@@ -1246,7 +1247,7 @@ class PgStorage(StorageBackend):
 
                 tree = build_merkle_tree(record_hashes)
 
-                if tree.root != cp["merkle_root"]:
+                if not hmac.compare_digest(tree.root, cp["merkle_root"]):
                     issues.append(
                         f"Checkpoint {cp['id']} Merkle root mismatch: "
                         f"tampering detected in records {cp['from_sequence']}-{cp['to_sequence']}"

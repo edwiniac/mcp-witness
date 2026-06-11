@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -1239,7 +1240,7 @@ class SqliteStorage(StorageBackend):
                 hmac_key=get_hmac_key(),
             )
 
-            if record.record_hash != expected_hash:
+            if not hmac.compare_digest(record.record_hash, expected_hash):
                 if first_invalid is None:
                     first_invalid = record.sequence
                 issues.append(
@@ -1728,7 +1729,7 @@ class SqliteStorage(StorageBackend):
 
             if stored_root is not None:
                 # O(1): compare stored root against checkpoint record
-                if stored_root != cp["merkle_root"]:
+                if not hmac.compare_digest(stored_root, cp["merkle_root"]):
                     issues.append(
                         f"Checkpoint {cp['id']} Merkle root mismatch "
                         f"(stored tree_data): tampering detected in "
@@ -1738,7 +1739,7 @@ class SqliteStorage(StorageBackend):
                 # Fallback: rebuild Merkle tree from scratch.
                 # Triggered when tree_data is absent or malformed.
                 tree = build_merkle_tree(hashes)
-                if tree.root != cp["merkle_root"]:
+                if not hmac.compare_digest(tree.root, cp["merkle_root"]):
                     issues.append(
                         f"Checkpoint {cp['id']} Merkle root mismatch: "
                         f"tampering detected in records "

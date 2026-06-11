@@ -5,6 +5,7 @@ Generates HTML compliance reports and (optionally) PDF reports.
 """
 
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -133,10 +134,10 @@ def generate_html_report(
         for cp in checkpoints:
             cp_rows += f"""
             <div class="checkpoint-item">
-                <div class="cp-header"><strong>Checkpoint #{cp.get('id', '?')}</strong></div>
-                <div class="cp-detail">Records {cp.get('from_sequence', '?')}–{cp.get('to_sequence', '?')}</div>
-                <div class="cp-detail">Count: {cp.get('record_count', 0)} records</div>
-                <div class="cp-detail hash">Root: {cp.get('merkle_root', '?')[:24]}...</div>
+                <div class="cp-header"><strong>Checkpoint #{escape_html(str(cp.get('id', '?')))}</strong></div>
+                <div class="cp-detail">Records {escape_html(str(cp.get('from_sequence', '?')))}–{escape_html(str(cp.get('to_sequence', '?')))}</div>
+                <div class="cp-detail">Count: {escape_html(str(cp.get('record_count', 0)))} records</div>
+                <div class="cp-detail hash">Root: {escape_html(str(cp.get('merkle_root', '?'))[:24])}...</div>
             </div>"""
         checkpoints_section = cp_rows
     else:
@@ -366,6 +367,9 @@ def get_sensitivity_color(sensitivity: str) -> str:
     return colors.get(sensitivity.lower(), "#58a6ff")
 
 
+_CSS_TOKEN_SAFE = re.compile(r"[^a-zA-Z0-9_-]")
+
+
 def tag_class_for_action(action_type: str) -> str:
-    """Get the CSS tag class for an action type."""
-    return f"tag-{action_type}"
+    """Get the CSS tag class for an action type (sanitized for attribute use)."""
+    return f"tag-{_CSS_TOKEN_SAFE.sub('', str(action_type))}"

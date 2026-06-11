@@ -75,7 +75,7 @@
 <div class="container">
   <header>
     <div>
-      <h1>🔐 MCP Witness <span class="version">v0.3.0</span></h1>
+      <h1>🔐 MCP Witness <span class="version">v1.0.0</span></h1>
       <p style="color:var(--text2);font-size:0.85rem;margin-top:4px;">Immutable audit trail for AI decisions</p>
     </div>
     <div id="chain-status"></div>
@@ -114,6 +114,21 @@
 // Colors for chart bars
 const BAR_COLORS = ['#58a6ff','#3fb950','#d2991d','#f85149','#a371f7','#79c0ff','#56d364'];
 
+// Escape untrusted values before interpolating into innerHTML (XSS defense)
+function esc(v) {
+  return String(v ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
+}
+
+// CSS class suffixes must be strictly alphanumeric/underscore
+function cssToken(v) {
+  return String(v ?? '').replace(/[^a-zA-Z0-9_-]/g, '');
+}
+
 async function load() {
   try {
     // Try loading from API endpoint, fall back to demo data
@@ -145,7 +160,8 @@ async function load() {
     
     render(data);
   } catch (e) {
-    document.body.innerHTML = '<div class="container"><p style="color:var(--red)">Failed to load dashboard: ' + e.message + '</p></div>';
+    document.body.innerHTML = '<div class="container"><p style="color:var(--red)"></p></div>';
+    document.body.querySelector('p').textContent = 'Failed to load dashboard: ' + e.message;
   }
 }
 
@@ -171,12 +187,12 @@ function render(d) {
       '<thead><tr><th>Seq</th><th>Type</th><th>Tool</th><th>Sensitivity</th><th>Hash</th><th>Time</th></tr></thead>' +
       '<tbody>' + d.recent_records.map(r =>
         `<tr>
-          <td>#${r.sequence}</td>
-          <td><span class="tag tag-${r.action_type}">${r.action_type}</span></td>
-          <td>${r.tool_name || '—'}</td>
-          <td><span class="tag tag-${r.sensitivity}">${r.sensitivity}</span></td>
-          <td class="hash">${r.record_hash}</td>
-          <td style="font-size:0.75rem;color:var(--text2);">${new Date(r.timestamp).toLocaleTimeString()}</td>
+          <td>#${esc(r.sequence)}</td>
+          <td><span class="tag tag-${cssToken(r.action_type)}">${esc(r.action_type)}</span></td>
+          <td>${esc(r.tool_name || '—')}</td>
+          <td><span class="tag tag-${cssToken(r.sensitivity)}">${esc(r.sensitivity)}</span></td>
+          <td class="hash">${esc(r.record_hash)}</td>
+          <td style="font-size:0.75rem;color:var(--text2);">${esc(new Date(r.timestamp).toLocaleTimeString())}</td>
         </tr>`
       ).join('') + '</tbody></table>';
   } else {
@@ -188,11 +204,11 @@ function render(d) {
     document.getElementById('recent-checkpoints').innerHTML = d.recent_checkpoints.map(cp =>
       `<div class="checkpoint-card">
         <div class="checkpoint-header">
-          <strong>Checkpoint #${cp.id}</strong>
-          <span style="font-size:0.7rem;color:var(--text2);">${cp.record_count} records</span>
+          <strong>Checkpoint #${esc(cp.id)}</strong>
+          <span style="font-size:0.7rem;color:var(--text2);">${esc(cp.record_count)} records</span>
         </div>
-        <div class="hash">Root: ${cp.merkle_root}</div>
-        <div style="font-size:0.7rem;color:var(--text2);">Records ${cp.from_sequence}–${cp.to_sequence} · ${new Date(cp.created_at).toLocaleDateString()}</div>
+        <div class="hash">Root: ${esc(cp.merkle_root)}</div>
+        <div style="font-size:0.7rem;color:var(--text2);">Records ${esc(cp.from_sequence)}–${esc(cp.to_sequence)} · ${esc(new Date(cp.created_at).toLocaleDateString())}</div>
       </div>`
     ).join('');
   } else {
@@ -219,7 +235,7 @@ function renderBars(id, data) {
     .map(([k,v], i) => {
       const pct = total > 0 ? Math.round(v/total*100) : 0;
       return `<div class="bar-group">
-        <div class="bar-label"><span>${k}</span><span>${v} (${pct}%)</span></div>
+        <div class="bar-label"><span>${esc(k)}</span><span>${esc(v)} (${pct}%)</span></div>
         <div class="bar-track"><div class="bar-fill" style="width:${Math.max(pct,2)}%;background:${BAR_COLORS[i%7]}"></div></div>
       </div>`;
     }).join('');
