@@ -163,3 +163,61 @@ class TestBackfill:
         count = await storage.backfill_checkpoints()
         # No checkpoints because we have fewer than CHECKPOINT_INTERVAL records
         assert count == 0
+
+
+class TestFastVerificationTamperDetection:
+    """Regression tests: verify_chain_fast must recompute Merkle roots from
+    actual record hashes, not compare a checkpoint row against itself."""
+
+    @pytest.mark.asyncio
+    async def test_fast_verify_detects_tampering_in_checkpointed_range(self, storage, monkeypatch):
+        """Tampering with a record inside a checkpointed range is detected."""
+        monkeypatch.setattr("mcp_witness.storage.CHECKPOINT_INTERVAL", 5)
+        for i in range(5):
+            await storage.record(action_type=ActionType.TOOL_CALL, tool_name=f"t{i}")
+        assert len(await storage.list_checkpoints()) == 1
+
+        # Tamper with a record hash inside the checkpointed range
+        await storage._db.execute(
+            "UPDATE witness_records "
+            "SET record_hash = 'deadbeef' || substr(record_hash, 9) "
+            "WHERE sequence = 2"
+        )
+        await storage._db.commit()
+
+        result = await storage.verify_chain_fast()
+
+        assert result.valid is False
+        assert any("Merkle root mismatch" in issue for issue in result.issues)
+
+    @pytest.mark.asyncio
+    async def test_fast_verify_untampered_checkpoint_passes(self, storage, monkeypatch):
+        """A clean checkpointed chain verifies as valid."""
+        monkeypatch.setattr("mcp_witness.storage.CHECKPOINT_INTERVAL", 5)
+        for i in range(5):
+            await storage.record(action_type=ActionType.TOOL_CALL, tool_name=f"t{i}")
+
+        result = await storage.verify_chain_fast()
+
+        assert result.valid is True
+
+    @pytest.mark.asyncio
+    async def test_fast_verify_retention_gap_falls_back_to_linear(self, storage, monkeypatch):
+        """A checkpoint range with retention-deleted records is verified
+        linearly instead of raising a false tampering alarm."""
+        monkeypatch.setattr("mcp_witness.storage.CHECKPOINT_INTERVAL", 5)
+        for i in range(5):
+            await storage.record(action_type=ActionType.TOOL_CALL, tool_name=f"t{i}")
+
+        # Simulate retention expiry of the two oldest records
+        await storage._db.execute(
+            "UPDATE witness_records "
+            "SET timestamp = '2020-01-01T00:00:00+00:00', retention_days = 1 "
+            "WHERE sequence IN (0, 1)"
+        )
+        await storage._db.commit()
+        assert await storage.cleanup_expired() == 2
+
+        result = await storage.verify_chain_fast()
+
+        assert result.valid is True

@@ -658,6 +658,7 @@ class PgStorage(StorageBackend):
             canonical_payload=canonical_payload_hex,
             signer_key_id=signer_key_id,
             redacted_fields=redacted_fields,
+            org_id=resolved_org_id,
         )
 
         await self._maybe_create_checkpoint(record.sequence)
@@ -906,11 +907,17 @@ class PgStorage(StorageBackend):
                         canonical_payload=canonical_payload_hex,
                         signer_key_id=signer_key_id,
                         redacted_fields=rec["redact_fields_list"],
+                        org_id=resolved_org_id,
                     )
                     result_records.append(record)
 
                     prev_hash = record_hash
                     sequence += 1
+
+        # Keep the cached tail hash current so the chain invariant check in
+        # record() doesn't false-alarm after a batch insert.
+        if result_records:
+            self._last_record_hash = result_records[-1].record_hash
 
         # Create checkpoints (outside the transaction)
         for rec in result_records:
@@ -1084,7 +1091,23 @@ class PgStorage(StorageBackend):
                     "SELECT record_hash FROM witness_records WHERE sequence = $1",
                     first_sequence - 1,
                 )
-                prev_hash = prev_row["record_hash"] if prev_row else GENESIS_HASH
+                if prev_row:
+                    prev_hash = prev_row["record_hash"]
+                else:
+                    min_seq = await conn.fetchval("SELECT MIN(sequence) FROM witness_records")
+                    if min_seq == first_sequence:
+                        # Chain head truncated by retention cleanup — the link
+                        # to the deleted predecessor can no longer be verified;
+                        # trust the stored prev_hash and verify forward.
+                        prev_hash = first_record.prev_hash
+                        logger.info(
+                            "verify_chain: records before sequence %d no longer exist "
+                            "(retention cleanup); starting verification from stored prev_hash",
+                            first_sequence,
+                        )
+                    else:
+                        # Predecessor missing mid-chain — flag as a break
+                        prev_hash = GENESIS_HASH
             else:
                 prev_hash = GENESIS_HASH
 
@@ -1251,6 +1274,19 @@ class PgStorage(StorageBackend):
                 )
                 record_hashes = [r["record_hash"] for r in hashes]
 
+                if len(record_hashes) != cp["record_count"]:
+                    # Records in this range no longer exist (retention
+                    # cleanup) — the Merkle root cannot be recomputed.
+                    # Verify the surviving records linearly instead of
+                    # reporting a false tampering alarm.
+                    range_result = await self.verify_chain(
+                        from_sequence=cp["from_sequence"],
+                        to_sequence=cp["to_sequence"],
+                    )
+                    issues.extend(range_result.issues)
+                    records_checked += range_result.records_checked
+                    continue
+
                 tree = build_merkle_tree(record_hashes)
 
                 if tree.root != cp["merkle_root"]:
@@ -1393,7 +1429,14 @@ class PgStorage(StorageBackend):
                 WHERE (created_at + (retention_days || ' days')::INTERVAL) < NOW()
                 """)
             parts = result.split()
-            return int(parts[1]) if len(parts) == 2 else 0
+            deleted = int(parts[1]) if len(parts) == 2 else 0
+            if deleted > 0:
+                # Refresh the cached tail hash — retention may have deleted
+                # the newest record, and a stale cache would trip the chain
+                # invariant check on the next write.
+                last = await self._get_last_record(conn)
+                self._last_record_hash = last["record_hash"] if last else None
+            return deleted
 
     async def redact_record(
         self,

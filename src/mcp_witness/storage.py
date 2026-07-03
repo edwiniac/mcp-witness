@@ -518,6 +518,9 @@ class SqliteStorage(StorageBackend):
 
         record_id = uuid4()
 
+        # Resolve org_id: prefer explicit, fall back to env var
+        resolved_org_id = org_id or os.getenv("MCP_WITNESS_ORG_ID") or None
+
         async def _do_insert():
             # BEGIN IMMEDIATE locks the write transaction upfront, preventing
             # concurrent writers from reading stale sequence numbers.
@@ -528,25 +531,20 @@ class SqliteStorage(StorageBackend):
                 prev_hash = last_record["record_hash"] if last_record else GENESIS_HASH
                 sequence = (last_record["sequence"] + 1) if last_record else 0
 
-                # Verify chain integrity against DB state (inside transaction).
-                # This catches chain forks even across process restarts where
-                # the in-memory _last_record_hash cache is lost.
-                if prev_hash != GENESIS_HASH:
-                    cursor = await self._db.execute(
-                        "SELECT record_hash FROM witness_records" " ORDER BY sequence DESC LIMIT 1"
+                # Runtime invariant: the DB tail must match the hash cached
+                # after this process's previous write. A mismatch means the
+                # chain tail was modified out-of-band (tampering or another
+                # writer) between our writes.
+                if self._last_record_hash is not None and prev_hash != self._last_record_hash:
+                    self._chain_valid = False
+                    logger.critical(
+                        "CHAIN INVARIANT BROKEN at sequence %d: "
+                        "expected prev_hash=%s (cached from last write), got %s. "
+                        "Chain may be forked!",
+                        sequence,
+                        self._last_record_hash[:16],
+                        prev_hash[:16],
                     )
-                    row = await cursor.fetchone()
-                    db_last_hash = row[0] if row else None
-                    if db_last_hash is not None and db_last_hash != prev_hash:
-                        self._chain_valid = False
-                        logger.critical(
-                            "CHAIN INVARIANT BROKEN at sequence %d: "
-                            "expected prev_hash=%s (from DB), got %s. "
-                            "Chain may be forked!",
-                            sequence,
-                            db_last_hash[:16],
-                            prev_hash[:16],
-                        )
 
                 record_hash = compute_record_hash(
                     prev_hash=prev_hash,
@@ -590,9 +588,6 @@ class SqliteStorage(StorageBackend):
                     signer_pk = get_public_key_hex()
                     canonical_payload_hex = canonical_bytes.hex()
                     signer_key_id = key_id
-
-                # Resolve org_id: prefer explicit, fall back to env var
-                resolved_org_id = org_id or os.getenv("MCP_WITNESS_ORG_ID") or None
 
                 await self._db.execute(
                     """
@@ -696,6 +691,7 @@ class SqliteStorage(StorageBackend):
             redacted_fields=redacted_fields,
             canonical_payload=canonical_payload_hex,
             signer_key_id=signer_key_id,
+            org_id=resolved_org_id,
         )
 
         _metrics.records_written.inc()
@@ -806,6 +802,9 @@ class SqliteStorage(StorageBackend):
             encrypted_input = _encrypt_dict(processed_input, sensitivity)
             encrypted_output = _encrypt_dict(processed_output, sensitivity)
 
+            # Resolve org_id: per-record value, then method arg, then env var
+            resolved_org_id = r_kwargs.get("org_id") or org_id or os.getenv("MCP_WITNESS_ORG_ID")
+
             processed.append(
                 {
                     "action_type": action_type,
@@ -827,6 +826,7 @@ class SqliteStorage(StorageBackend):
                     "retention_days": retention_days,
                     "record_id": record_id,
                     "redact_fields_list": redact_fields_list,
+                    "org_id": resolved_org_id or None,
                 }
             )
 
@@ -901,8 +901,8 @@ class SqliteStorage(StorageBackend):
                             context, reasoning, confidence,
                             sensitivity, retention_days, tsa_receipt, anchored_at,
                             redacted_fields, signature, signer_public_key,
-                            canonical_payload, signer_key_id
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            org_id, canonical_payload, signer_key_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             str(rec["record_id"]),
@@ -933,6 +933,7 @@ class SqliteStorage(StorageBackend):
                             json.dumps(rec["redact_fields_list"]),
                             signature,
                             signer_pk,
+                            rec["org_id"],
                             canonical_payload_hex,
                             signer_key_id,
                         ),
@@ -963,6 +964,7 @@ class SqliteStorage(StorageBackend):
                         redacted_fields=rec["redact_fields_list"],
                         canonical_payload=canonical_payload_hex,
                         signer_key_id=signer_key_id,
+                        org_id=rec["org_id"],
                     )
                     result_records.append(record)
 
@@ -982,6 +984,11 @@ class SqliteStorage(StorageBackend):
         finally:
             async with self._transaction_lock:
                 self._active_transactions -= 1
+
+        # Keep the cached tail hash current so the chain invariant check in
+        # record() doesn't false-alarm after a batch insert.
+        if result_records:
+            self._last_record_hash = result_records[-1].record_hash
 
         # Create checkpoints (outside the transaction)
         for rec in result_records:
@@ -1217,7 +1224,25 @@ class SqliteStorage(StorageBackend):
                 "SELECT record_hash FROM witness_records WHERE sequence = ?", (first_sequence - 1,)
             )
             prev_row = await cursor.fetchone()
-            prev_hash = prev_row[0] if prev_row else GENESIS_HASH
+            if prev_row:
+                prev_hash = prev_row[0]
+            else:
+                cursor = await self._db.execute("SELECT MIN(sequence) FROM witness_records")
+                min_row = await cursor.fetchone()
+                if min_row and min_row[0] == first_sequence:
+                    # The chain head was truncated (retention cleanup removed
+                    # the oldest records). The link to the deleted predecessor
+                    # can no longer be verified; trust the stored prev_hash and
+                    # verify forward from here instead of reporting a break.
+                    prev_hash = rows[0]["prev_hash"]
+                    logger.info(
+                        "verify_chain: records before sequence %d no longer exist "
+                        "(retention cleanup); starting verification from stored prev_hash",
+                        first_sequence,
+                    )
+                else:
+                    # Predecessor missing mid-chain — flag as a break
+                    prev_hash = GENESIS_HASH
         else:
             prev_hash = GENESIS_HASH
 
@@ -1477,6 +1502,11 @@ class SqliteStorage(StorageBackend):
         await self._db.commit()
         if deleted > 0:
             logger.info("cleanup_expired: deleted %d expired records", deleted)
+            # Refresh the cached tail hash — retention may have deleted the
+            # newest record, and a stale cache would trip the chain invariant
+            # check on the next write.
+            last = await self._get_last_record()
+            self._last_record_hash = last["record_hash"] if last else None
         return deleted
 
     # =========================================================================
@@ -1669,8 +1699,10 @@ class SqliteStorage(StorageBackend):
         """
         Fast verification using Merkle checkpoints.
 
-        - Verifies checkpoint Merkle roots (O(1) per checkpoint)
-        - Only walks records between checkpoints (O(n) for remainder)
+        - Recomputes each checkpoint's Merkle root from the stored record
+          hashes (cheaper than full verification: skips per-record HMAC
+          recomputation and signature checks)
+        - Walks records after the last checkpoint linearly
         """
         # Get checkpoints in range
         conditions = ["1=1"]
@@ -1715,9 +1747,11 @@ class SqliteStorage(StorageBackend):
         issues = []
         records_checked = 0
 
-        # Verify each checkpoint's Merkle root.
-        # Prefer stored tree_data for O(1) root comparison;
-        # only rebuild the Merkle tree from scratch when tree_data is absent.
+        # Verify each checkpoint by recomputing its Merkle root from the
+        # actual record hashes in the database. SECURITY: the root must NOT
+        # be taken from the checkpoint's own stored tree_data — comparing a
+        # row against itself verifies nothing and lets record tampering
+        # inside checkpointed ranges go undetected.
         for cp in checkpoints:
             # Get record hashes for this checkpoint
             cursor = await self._db.execute(
@@ -1728,30 +1762,26 @@ class SqliteStorage(StorageBackend):
             )
             hashes = [r[0] for r in await cursor.fetchall()]
 
-            stored_root: Optional[str] = None
-            if cp["tree_data"]:
-                tree_dict = json.loads(cp["tree_data"])
-                if isinstance(tree_dict, dict):
-                    stored_root = tree_dict.get("root")
+            if len(hashes) != cp["record_count"]:
+                # Records in this range no longer exist (retention cleanup),
+                # so the Merkle root cannot be recomputed. Verify the
+                # surviving records linearly — this still detects tampering
+                # and mid-range deletion via chain links and record hashes.
+                range_result = await self.verify_chain(
+                    from_sequence=cp["from_sequence"],
+                    to_sequence=cp["to_sequence"],
+                )
+                issues.extend(range_result.issues)
+                records_checked += range_result.records_checked
+                continue
 
-            if stored_root is not None:
-                # O(1): compare stored root against checkpoint record
-                if stored_root != cp["merkle_root"]:
-                    issues.append(
-                        f"Checkpoint {cp['id']} Merkle root mismatch "
-                        f"(stored tree_data): tampering detected in "
-                        f"records {cp['from_sequence']}-{cp['to_sequence']}"
-                    )
-            else:
-                # Fallback: rebuild Merkle tree from scratch.
-                # Triggered when tree_data is absent or malformed.
-                tree = build_merkle_tree(hashes)
-                if tree.root != cp["merkle_root"]:
-                    issues.append(
-                        f"Checkpoint {cp['id']} Merkle root mismatch: "
-                        f"tampering detected in records "
-                        f"{cp['from_sequence']}-{cp['to_sequence']}"
-                    )
+            tree = build_merkle_tree(hashes)
+            if tree.root != cp["merkle_root"]:
+                issues.append(
+                    f"Checkpoint {cp['id']} Merkle root mismatch: "
+                    f"tampering detected in records "
+                    f"{cp['from_sequence']}-{cp['to_sequence']}"
+                )
 
             records_checked += cp["record_count"]
 
@@ -2346,6 +2376,7 @@ class SqliteStorage(StorageBackend):
             ),
             signer_key_id=(row["signer_key_id"] if "signer_key_id" in row.keys() else None),
             redacted_fields=json.loads(row["redacted_fields"]) if row["redacted_fields"] else [],
+            org_id=row["org_id"] if "org_id" in row.keys() else None,
         )
 
 

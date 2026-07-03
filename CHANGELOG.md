@@ -4,6 +4,39 @@ All notable changes to mcp-witness.
 
 ## [Unreleased]
 
+### Security
+- **Fast verification now actually detects tampering in checkpointed ranges
+  (SQLite).** `verify_chain_fast()` compared the Merkle root stored inside a
+  checkpoint's own `tree_data` against the `merkle_root` column of the same
+  row — the record hashes were fetched but never used, so modifying any
+  record inside a checkpointed range passed fast verification (including the
+  startup integrity check and the dashboard). The root is now always
+  recomputed from the actual record hashes, matching the PostgreSQL backend.
+- **Out-of-band tail modification is now detected on write (SQLite).** The
+  runtime chain-invariant check in `record()` re-read the same row inside
+  the same transaction and compared it to itself, so it could never fire.
+  It now compares the database tail against the hash cached after this
+  process's previous write, matching the PostgreSQL backend. `batch_record()`
+  and `cleanup_expired()` keep that cache current on both backends.
+
+### Fixed
+- **Retention cleanup no longer breaks chain verification.** After
+  `cleanup_expired()` deleted the oldest records, `verify_chain()` expected
+  `GENESIS_HASH` for the first survivor and reported a permanent chain break
+  — which, combined with fail-closed startup verification, would prevent the
+  server from starting once any record expired. Verification now recognises
+  a head truncated by retention (missing predecessor of the minimum
+  sequence) and verifies forward from the stored `prev_hash`; mid-chain
+  deletions are still reported as breaks. `verify_chain_fast()` falls back
+  to linear verification for checkpoint ranges with retention-deleted
+  records instead of raising a false tampering alarm (both backends).
+- **`org_id` round-trips correctly.** SQLite `batch_record()` accepted
+  `org_id` but never wrote it; records read back from either backend never
+  populated the model's `org_id` field (SQLite), and both backends omitted
+  it from the `WitnessRecord` returned by `record()`/`batch_record()`.
+  Per-record `org_id` in batch dicts is honoured, falling back to the
+  method argument and then `MCP_WITNESS_ORG_ID`.
+
 ### Changed
 - **Keyset pagination for queries.** `StorageBackend.query()` (SQLite,
   PostgreSQL, and `BufferedStorage`) accepts a new `after_sequence` cursor

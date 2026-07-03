@@ -1206,3 +1206,110 @@ class TestChainValidCaching:
         assert (
             temp_storage._chain_valid is False
         ), "A ranged verify_chain() must not overwrite the full-chain cached flag"
+
+
+class TestRetentionVerificationInteraction:
+    """Retention cleanup must not make an otherwise-intact chain unverifiable."""
+
+    @pytest.mark.asyncio
+    async def test_verify_chain_valid_after_head_retention_cleanup(self, temp_storage):
+        """Deleting the oldest records via retention keeps the chain valid."""
+        for i in range(5):
+            await temp_storage.record(action_type=ActionType.TOOL_CALL, tool_name=f"t{i}")
+
+        await temp_storage._db.execute(
+            "UPDATE witness_records "
+            "SET timestamp = '2020-01-01T00:00:00+00:00', retention_days = 1 "
+            "WHERE sequence IN (0, 1)"
+        )
+        await temp_storage._db.commit()
+        assert await temp_storage.cleanup_expired() == 2
+
+        result = await temp_storage.verify_chain()
+
+        assert result.valid is True
+        assert result.records_checked == 3
+
+    @pytest.mark.asyncio
+    async def test_verify_chain_detects_midchain_deletion(self, temp_storage):
+        """Deleting a record in the middle of the chain is still a break."""
+        for i in range(5):
+            await temp_storage.record(action_type=ActionType.TOOL_CALL, tool_name=f"t{i}")
+
+        await temp_storage._db.execute("DELETE FROM witness_records WHERE sequence = 2")
+        await temp_storage._db.commit()
+
+        result = await temp_storage.verify_chain()
+
+        assert result.valid is False
+        assert any("Chain break" in issue for issue in result.issues)
+
+
+class TestChainInvariantCheck:
+    """The runtime invariant must detect out-of-band tail modification."""
+
+    @pytest.mark.asyncio
+    async def test_out_of_band_tail_modification_detected(self, temp_storage):
+        for _ in range(2):
+            await temp_storage.record(action_type=ActionType.TOOL_CALL)
+        assert temp_storage._chain_valid is True
+
+        # Modify the chain tail behind the storage layer's back
+        await temp_storage._db.execute(
+            "UPDATE witness_records "
+            "SET record_hash = 'deadbeef' || substr(record_hash, 9) "
+            "WHERE sequence = 1"
+        )
+        await temp_storage._db.commit()
+
+        await temp_storage.record(action_type=ActionType.TOOL_CALL)
+
+        assert temp_storage._chain_valid is False
+
+    @pytest.mark.asyncio
+    async def test_normal_writes_keep_chain_valid(self, temp_storage):
+        for _ in range(3):
+            await temp_storage.record(action_type=ActionType.TOOL_CALL)
+        assert temp_storage._chain_valid is True
+
+    @pytest.mark.asyncio
+    async def test_batch_then_single_record_no_false_alarm(self, temp_storage):
+        """batch_record must update the cached tail hash."""
+        await temp_storage.batch_record(
+            [
+                {"action_type": ActionType.TOOL_CALL},
+                {"action_type": ActionType.DECISION},
+            ]
+        )
+        await temp_storage.record(action_type=ActionType.TOOL_CALL)
+        assert temp_storage._chain_valid is True
+
+
+class TestOrgIdRoundTrip:
+    """org_id must survive write → model and write → read round trips."""
+
+    @pytest.mark.asyncio
+    async def test_record_returns_and_persists_org_id(self, temp_storage):
+        record = await temp_storage.record(action_type=ActionType.TOOL_CALL, org_id="org-x")
+        assert record.org_id == "org-x"
+
+        fetched = await temp_storage.get_by_id(record.id)
+        assert fetched is not None
+        assert fetched.org_id == "org-x"
+
+    @pytest.mark.asyncio
+    async def test_batch_record_org_id_per_record_and_fallback(self, temp_storage):
+        records = await temp_storage.batch_record(
+            [
+                {"action_type": ActionType.TOOL_CALL, "org_id": "org-a"},
+                {"action_type": ActionType.DECISION},
+            ],
+            org_id="org-default",
+        )
+        assert records[0].org_id == "org-a"
+        assert records[1].org_id == "org-default"
+
+        fetched_a = await temp_storage.get_by_sequence(0)
+        fetched_b = await temp_storage.get_by_sequence(1)
+        assert fetched_a.org_id == "org-a"
+        assert fetched_b.org_id == "org-default"
