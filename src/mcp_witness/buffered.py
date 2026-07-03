@@ -258,6 +258,7 @@ class BufferedStorage(StorageBackend):
         to_time: Optional[datetime] = None,
         limit: int = 100,
         offset: int = 0,
+        after_sequence: Optional[int] = None,
     ) -> list[WitnessRecord]:
         return await self._backend.query(
             session_id=session_id,
@@ -269,6 +270,7 @@ class BufferedStorage(StorageBackend):
             to_time=to_time,
             limit=limit,
             offset=offset,
+            after_sequence=after_sequence,
         )
 
     async def verify_chain(

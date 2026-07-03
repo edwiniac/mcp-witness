@@ -124,8 +124,16 @@ class StorageBackend(ABC):
         to_time: Optional[datetime] = None,
         limit: int = 100,
         offset: int = 0,
+        after_sequence: Optional[int] = None,
     ) -> list[WitnessRecord]:
-        """Query records with filters."""
+        """Query records with filters.
+
+        Args:
+            after_sequence: Keyset pagination cursor — only return records with
+                ``sequence > after_sequence``. Prefer this over ``offset`` for
+                deep pagination: OFFSET forces the database to scan and discard
+                all skipped rows, while a sequence cursor is an index seek.
+        """
         ...
 
     # ── Chain Verification ───────────────────────────────────────────────

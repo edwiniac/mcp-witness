@@ -12,6 +12,7 @@ import logging
 import os
 import signal
 import time
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Callable, Optional
 from uuid import uuid4
@@ -47,6 +48,9 @@ _storage_lock = asyncio.Lock()
 # Pagination ceilings
 MAX_QUERY_LIMIT = 10000
 MAX_OFFSET = 100000
+
+# Page size for streaming (file) exports — each page is one keyset query
+EXPORT_PAGE_SIZE = 1000
 
 # Default database path
 DEFAULT_DB_PATH = os.getenv("MCP_WITNESS_DB", "~/.mcp-witness/witness.db")
@@ -865,23 +869,25 @@ async def handle_export(store: StorageBackend, args: dict) -> dict:
     if args.get("to_time"):
         to_time = datetime.fromisoformat(args["to_time"].replace("Z", "+00:00"))
 
-    records = await store.query(
-        from_time=from_time,
-        to_time=to_time,
-        limit=MAX_QUERY_LIMIT,
-    )
-
-    # Filter by session if specified
     session_ids = args.get("session_ids", [])
-    if session_ids:
-        records = [r for r in records if r.session_id in session_ids]
+    export_format = args.get("format", "json")
 
     include_verification = args.get("include_verification", True)
     verification = None
     if include_verification:
         verification = await store.verify_chain()
 
-    export_format = args.get("format", "json")
+    # The streaming (output_path) branch paginates instead of materializing
+    # everything; only fetch the full result set for summary/in-memory formats.
+    records: list[WitnessRecord] = []
+    if export_format == "summary" or not output_path:
+        records = await store.query(
+            from_time=from_time,
+            to_time=to_time,
+            limit=MAX_QUERY_LIMIT,
+        )
+        if session_ids:
+            records = [r for r in records if r.session_id in session_ids]
 
     if export_format == "summary":
         return {
@@ -894,11 +900,8 @@ async def handle_export(store: StorageBackend, args: dict) -> dict:
             },
             "unique_sessions": len(set(r.session_id for r in records)),
             "unique_actors": len(set(r.actor_id for r in records)),
-            "actions_by_type": {
-                at.value: sum(1 for r in records if r.action_type == at)
-                for at in ActionType
-                if any(r.action_type == at for r in records)
-            },
+            # Single O(n) pass instead of re-scanning records per enum variant
+            "actions_by_type": dict(Counter(r.action_type.value for r in records)),
             "chain_verification": (
                 {
                     "valid": verification.valid if verification else None,
@@ -933,17 +936,19 @@ async def handle_export(store: StorageBackend, args: dict) -> dict:
             f.write('  "records": [\n')
 
             first = True
-            offset = 0
-            page_size = 1000
+            # Keyset pagination: seek past the last-seen sequence instead of
+            # OFFSET, which degrades linearly as the export gets deeper.
+            last_sequence: Optional[int] = None
             while True:
                 rows = await store.query(
                     from_time=from_time,
                     to_time=to_time,
-                    limit=page_size,
-                    offset=offset,
+                    limit=EXPORT_PAGE_SIZE,
+                    after_sequence=last_sequence,
                 )
                 if not rows:
                     break
+                last_sequence = rows[-1].sequence
                 for r in rows:
                     if session_ids and r.session_id not in session_ids:
                         continue
@@ -952,7 +957,6 @@ async def handle_export(store: StorageBackend, args: dict) -> dict:
                     first = False
                     f.write(f"    {json.dumps(record_to_dict(r), default=str)}")
                     record_count += 1
-                offset += page_size
 
             f.write("\n  ]\n")
             f.write("}\n")
@@ -964,15 +968,7 @@ async def handle_export(store: StorageBackend, args: dict) -> dict:
             "size_bytes": safe_path.stat().st_size,
         }
 
-    # In-memory export (no output file) — keep backward-compatible behaviour
-    records = await store.query(
-        from_time=from_time,
-        to_time=to_time,
-        limit=MAX_QUERY_LIMIT,
-    )
-    if session_ids:
-        records = [r for r in records if r.session_id in session_ids]
-
+    # In-memory export (no output file) — records were fetched above
     export_data = {
         "export_format": "json",
         "generated_at": datetime.now(timezone.utc).isoformat(),

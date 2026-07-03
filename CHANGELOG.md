@@ -2,6 +2,24 @@
 
 All notable changes to mcp-witness.
 
+## [Unreleased]
+
+### Changed
+- **Keyset pagination for queries.** `StorageBackend.query()` (SQLite,
+  PostgreSQL, and `BufferedStorage`) accepts a new `after_sequence` cursor
+  that seeks via the sequence index instead of scanning and discarding rows
+  the way `OFFSET` does. `offset` remains supported for shallow pages.
+- **Streaming exports no longer degrade on deep pages.** `witness_export`
+  with an `output` path now walks the chain with the `after_sequence` cursor
+  (previously a growing `OFFSET`, which made large exports O(n²) in rows
+  scanned), and no longer materializes the full result set up front.
+
+### Fixed
+- **Export summary computed in a single pass.** `actions_by_type` in the
+  summary export uses one `Counter` pass instead of re-scanning all records
+  once per `ActionType` variant.
+- **Redundant duplicate query removed** from the in-memory JSON export path.
+
 ## [1.0.0] — 2026-05-29
 
 First production-stable release. This release flips several defaults to

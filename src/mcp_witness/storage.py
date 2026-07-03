@@ -1022,8 +1022,13 @@ class SqliteStorage(StorageBackend):
         to_time: Optional[datetime] = None,
         limit: int = 100,
         offset: int = 0,
+        after_sequence: Optional[int] = None,
     ) -> list[WitnessRecord]:
-        """Query records with filters."""
+        """Query records with filters.
+
+        ``after_sequence`` enables keyset pagination (sequence > cursor via an
+        index seek) and should be preferred over ``offset`` for deep pages.
+        """
         conditions = []
         params = []
 
@@ -1048,6 +1053,9 @@ class SqliteStorage(StorageBackend):
         if to_time:
             conditions.append("timestamp <= ?")
             params.append(to_time.isoformat())
+        if after_sequence is not None:
+            conditions.append("sequence > ?")
+            params.append(after_sequence)
 
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 

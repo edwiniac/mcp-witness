@@ -947,8 +947,13 @@ class PgStorage(StorageBackend):
         to_time: Optional[datetime] = None,
         limit: int = 100,
         offset: int = 0,
+        after_sequence: Optional[int] = None,
     ) -> list[WitnessRecord]:
-        """Query records with filters."""
+        """Query records with filters.
+
+        ``after_sequence`` enables keyset pagination (sequence > cursor via an
+        index seek) and should be preferred over ``offset`` for deep pages.
+        """
         conditions: list[str] = []
         params: list = []
         param_idx = 1
@@ -974,6 +979,8 @@ class PgStorage(StorageBackend):
             conditions.append(f"timestamp >= {add_param(from_time)}")
         if to_time is not None:
             conditions.append(f"timestamp <= {add_param(to_time)}")
+        if after_sequence is not None:
+            conditions.append(f"sequence > {add_param(after_sequence)}")
 
         where_clause = " AND ".join(conditions) if conditions else "TRUE"
 

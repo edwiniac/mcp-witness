@@ -340,6 +340,44 @@ class TestHandleExportExtra:
         assert data["export_format"] == "json"
         assert len(data["records"]) == 2
 
+    @pytest.mark.asyncio
+    async def test_export_to_file_multiple_pages(self, temp_storage, tmp_path, monkeypatch):
+        """Streaming export walks multiple keyset pages without gaps or duplicates."""
+        monkeypatch.setenv("MCP_WITNESS_EXPORT_DIR", str(tmp_path))
+        monkeypatch.setattr("mcp_witness.security.ALLOWED_EXPORT_DIR", tmp_path.resolve())
+        # Force several keyset pages with a tiny page size
+        monkeypatch.setattr("mcp_witness.server.EXPORT_PAGE_SIZE", 2)
+
+        for _ in range(7):
+            await handle_record(temp_storage, {"action_type": "tool_call"})
+
+        out = tmp_path / "export_paged.json"
+        result = await handle_export(temp_storage, {"output": str(out)})
+
+        assert result["record_count"] == 7
+        data = json.loads(out.read_text())
+        sequences = [r["sequence"] for r in data["records"]]
+        assert sequences == list(range(7))
+
+    @pytest.mark.asyncio
+    async def test_export_to_file_session_filter(self, temp_storage, tmp_path, monkeypatch):
+        """Streaming export honours session_ids filtering across pages."""
+        monkeypatch.setenv("MCP_WITNESS_EXPORT_DIR", str(tmp_path))
+        monkeypatch.setattr("mcp_witness.security.ALLOWED_EXPORT_DIR", tmp_path.resolve())
+
+        for i in range(6):
+            await handle_record(
+                temp_storage,
+                {"action_type": "tool_call", "session_id": "keep" if i % 2 == 0 else "drop"},
+            )
+
+        out = tmp_path / "export_filtered.json"
+        result = await handle_export(temp_storage, {"output": str(out), "session_ids": ["keep"]})
+
+        assert result["record_count"] == 3
+        data = json.loads(out.read_text())
+        assert all(r["session_id"] == "keep" for r in data["records"])
+
 
 # =========================================================================
 # Argument validators

@@ -189,6 +189,46 @@ class TestWitnessQuery:
         results = await temp_storage.query(session_id="nonexistent")
         assert len(results) == 0
 
+    @pytest.mark.asyncio
+    async def test_query_keyset_pagination(self, temp_storage):
+        """after_sequence returns only records past the cursor, in order."""
+        for _ in range(10):
+            await temp_storage.record(action_type=ActionType.TOOL_CALL)
+
+        results = await temp_storage.query(after_sequence=6)
+
+        assert [r.sequence for r in results] == [7, 8, 9]
+
+    @pytest.mark.asyncio
+    async def test_query_keyset_full_walk_matches_offset(self, temp_storage):
+        """Walking with a sequence cursor yields every record exactly once."""
+        for _ in range(7):
+            await temp_storage.record(action_type=ActionType.TOOL_CALL)
+
+        seen: list[int] = []
+        cursor = None
+        while True:
+            page = await temp_storage.query(limit=3, after_sequence=cursor)
+            if not page:
+                break
+            seen.extend(r.sequence for r in page)
+            cursor = page[-1].sequence
+
+        assert seen == list(range(7))
+
+    @pytest.mark.asyncio
+    async def test_query_keyset_combines_with_filters(self, temp_storage):
+        """after_sequence stacks with other filters."""
+        for i in range(6):
+            await temp_storage.record(
+                action_type=ActionType.TOOL_CALL,
+                session_id="a" if i % 2 == 0 else "b",
+            )
+
+        results = await temp_storage.query(session_id="a", after_sequence=0)
+
+        assert [r.sequence for r in results] == [2, 4]
+
 
 class TestChainVerification:
     """Tests for chain integrity verification."""
