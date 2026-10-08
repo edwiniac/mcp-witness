@@ -258,16 +258,20 @@ class TestAuthorize:
                 authorize(AuthRole.AUDITOR, tool)
 
     def test_writer_write_tools(self):
-        """Writer can access all write tools."""
+        """Writer can access append-only write tools."""
         write_tools = {
             "witness_record",
             "witness_attest",
             "witness_anchor",
-            "witness_backfill",
-            "witness_configure_compliance",
         }
         for tool in write_tools:
             authorize(AuthRole.WRITER, tool)  # Should not raise
+
+    def test_writer_admin_tools_denied(self):
+        """Writer cannot erase, reconfigure or backfill (admin-only)."""
+        for tool in ("witness_delete", "witness_configure_compliance", "witness_backfill"):
+            with pytest.raises(PermissionError):
+                authorize(AuthRole.WRITER, tool)
 
     def test_writer_read_denied(self):
         """Writer cannot access read tools."""
@@ -354,8 +358,9 @@ class TestBackwardCompat:
 
         auditor_tools = ROLE_PERMISSIONS[AuthRole.AUDITOR]
         writer_tools = ROLE_PERMISSIONS[AuthRole.WRITER]
-        # Auditor + Writer should also cover all tools
-        assert auditor_tools | writer_tools == all_tools
+        # Admin-only tools are covered by neither auditor nor writer
+        assert auditor_tools | writer_tools < all_tools
+        assert "witness_delete" not in auditor_tools | writer_tools
 
 
 # =========================================================================

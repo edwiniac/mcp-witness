@@ -2,6 +2,48 @@
 
 All notable changes to mcp-witness.
 
+## [Unreleased]
+
+Security-fix release. Project status downgraded to **alpha**; documentation
+overclaims removed (see README "Trust model").
+
+### Security
+- **RBAC:** `witness_delete`, `witness_configure_compliance` and
+  `witness_backfill` are now admin-only. Previously the append-only `writer`
+  role could erase its own records.
+- **Erasure is audited:** `witness_delete` appends a chain record (ids, reason,
+  count; no content) in the `mcp-witness-admin` session.
+- **Compliance presets are enforced:** the active preset's auto-redact field
+  list is merged into every `witness_record`, its retention is the default, and
+  immutable presets block `witness_delete`. Preset changes are recorded on the
+  chain. Previously the tool reported "applied" but changed nothing.
+- **BufferedStorage hang:** the flush loop busy-spun at 100% CPU and starved
+  the event loop. It now blocks on the queue, never cancels a write
+  mid-transaction, fails all futures on error, and `close()` drains before
+  exiting. Added `redact_record`, `search` and `org_id` passthroughs.
+- **Dashboard:** "recent records" now shows the newest records; all
+  interpolated fields are HTML-escaped (stored XSS via `tool_name` etc.);
+  optional bearer-token auth via `MCP_WITNESS_DASHBOARD_TOKEN`, with a warning
+  when binding to a non-loopback address without it.
+- **Storage verification hardening:** chain verification checks more of each
+  record (signatures, linkage, metadata) and fails closed on inconsistencies.
+- **Anchoring verification:** anchor receipts are verified against the
+  checkpoint root rather than accepted structurally.
+- **Merkle:** stricter proof validation and tree construction.
+- **Keyed redaction:** redaction hashes are keyed so low-entropy values cannot be
+  brute-forced from the stored digest.
+- **Encryption:** AES-GCM field encryption binds associated data (record/field
+  context) so ciphertexts cannot be swapped between fields or records.
+- **Concurrency:** fixes for concurrent writers forking or corrupting the chain.
+
+### Changed
+- `mcp` dependency pinned to `>=1.0,<2`; `cryptography>=42` declared
+  explicitly; new `pdf` extra (`weasyprint>=60`).
+- Classifier `Development Status :: 3 - Alpha`.
+- README: warning that `pip install mcp-witness` installs an unrelated PyPI
+  project; install from source instead. Tool count corrected (18; there is no
+  `witness_token` tool).
+
 ## [1.0.0] — 2026-05-29
 
 First production-stable release. This release flips several defaults to

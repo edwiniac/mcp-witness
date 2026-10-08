@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-MCP Witness Server - Immutable audit trail for AI decisions.
+MCP Witness Server - tamper-evident audit log for AI agent actions.
 
-Provides cryptographic proof of what your AI did, when, and why.
-Designed for SOC2, HIPAA, and GDPR compliance.
+Agents self-report actions via ``witness_record``; mcp-witness hash-chains
+and (optionally) signs and anchors them so that after-the-fact edits by
+parties without the keys are detectable. It does not intercept or verify
+what the agent actually did.
 """
 
 import asyncio
@@ -22,6 +24,7 @@ from mcp.types import TextContent, Tool
 
 from . import metrics as _metrics
 from .auth import authenticate, authorize
+from .compliance import CompliancePreset, get_preset
 from .models import (
     ActionType,
     ActorType,
@@ -104,6 +107,47 @@ REQUIRE_HMAC = os.getenv("MCP_WITNESS_REQUIRE_HMAC", "false").lower() == "true"
 
 # Shutdown state
 _shutting_down = False
+
+# Active compliance preset (process-local). Set via witness_configure_compliance
+# or at startup via MCP_WITNESS_COMPLIANCE_PRESET. When set, it is ENFORCED on
+# witness_record (auto-redact fields merged in, default retention applied) and
+# on witness_delete (immutable presets refuse erasure).
+_active_compliance: Optional[CompliancePreset] = None
+_active_compliance_key: Optional[str] = None
+_compliance_env_loaded = False
+
+# Session used for server-generated administrative records (erasures,
+# compliance changes). Kept separate so erasing a user session never erases
+# the record of that erasure.
+ADMIN_SESSION_ID = "mcp-witness-admin"
+
+
+def get_active_compliance() -> Optional[CompliancePreset]:
+    """Return the active compliance preset, loading the env default once."""
+    global _active_compliance, _active_compliance_key, _compliance_env_loaded
+    if not _compliance_env_loaded:
+        _compliance_env_loaded = True
+        env_name = os.getenv("MCP_WITNESS_COMPLIANCE_PRESET", "").strip().lower()
+        if env_name and _active_compliance is None:
+            preset = get_preset(env_name)
+            if preset is None:
+                raise ValueError(f"Unknown MCP_WITNESS_COMPLIANCE_PRESET: {env_name}")
+            _active_compliance, _active_compliance_key = preset, env_name
+    return _active_compliance
+
+
+def set_active_compliance(name: Optional[str]) -> Optional[CompliancePreset]:
+    """Set (or clear, with ``None``) the active compliance preset."""
+    global _active_compliance, _active_compliance_key, _compliance_env_loaded
+    _compliance_env_loaded = True
+    if name is None:
+        _active_compliance, _active_compliance_key = None, None
+        return None
+    preset = get_preset(name)
+    if preset is None:
+        raise ValueError(f"Unknown compliance preset: {name}")
+    _active_compliance, _active_compliance_key = preset, name.lower()
+    return preset
 
 
 def _create_storage() -> StorageBackend:
@@ -446,7 +490,9 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="witness_configure_compliance",
             description="Apply a compliance preset (HIPAA, GDPR, SOX, FedRAMP, SOC2, PCI DSS). "
-            "Automatically configures retention, redaction, attestation, and audit settings.",
+            "Admin only. Enforces the preset's auto-redact field list and default "
+            "retention on subsequent witness_record calls (process-local) and blocks "
+            "witness_delete for immutable presets; other settings are advisory.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -473,7 +519,8 @@ async def list_tools() -> list[Tool]:
             "are nulled and the record is marked as redacted. "
             "Provide record_id for single deletion or session_id for "
             "GDPR right to erasure (deletes all records in a session). "
-            "The 'reason' field is required for audit trail.",
+            "The 'reason' field is required for audit trail. Admin only. "
+            "An erasure record (ids, reason, count; no content) is appended to the chain.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -607,6 +654,27 @@ async def handle_record(store: StorageBackend, args: dict) -> dict:
     """Handle witness_record tool call."""
     action_type = ActionType(args["action_type"])
 
+    redact_fields = args.get("redact_fields")
+    if redact_fields is not None and not (
+        isinstance(redact_fields, list) and all(isinstance(f, str) for f in redact_fields)
+    ):
+        raise ValueError("redact_fields must be a list of strings")
+    retention_days = args.get("retention_days")
+
+    preset = get_active_compliance()
+    if preset is not None:
+        # Enforce: preset PII field names are always redacted, in addition to
+        # whatever the caller asked for.
+        merged = list(redact_fields or [])
+        for f in preset.auto_redact:
+            if f not in merged:
+                merged.append(f)
+        redact_fields = merged
+        if retention_days is None and preset.retention_days is not None:
+            retention_days = preset.retention_days
+    if retention_days is None:
+        retention_days = 365
+
     record = await store.record(
         action_type=action_type,
         actor_type=ActorType(args.get("actor_type", "agent")),
@@ -619,8 +687,8 @@ async def handle_record(store: StorageBackend, args: dict) -> dict:
         reasoning=args.get("reasoning"),
         confidence=args.get("confidence"),
         sensitivity=Sensitivity(args.get("sensitivity", "internal")),
-        retention_days=_require_int(args.get("retention_days", 365), "retention_days", minimum=1),
-        redact_fields=args.get("redact_fields"),
+        retention_days=_require_int(retention_days, "retention_days", minimum=1),
+        redact_fields=redact_fields,
     )
 
     return {
@@ -1139,9 +1207,9 @@ async def handle_backfill(store: StorageBackend, args: dict) -> dict:
 @_register("witness_configure_compliance")
 async def handle_compliance(store: StorageBackend, args: dict) -> dict:
     """Handle witness_configure_compliance tool call."""
-    from .compliance import get_preset, get_preset_summary
+    from .compliance import get_preset_summary
 
-    preset_name = args["preset"]
+    preset_name = _require_str(args.get("preset", ""), "preset", max_len=64).lower()
     preset = get_preset(preset_name)
 
     if not preset:
@@ -1150,10 +1218,37 @@ async def handle_compliance(store: StorageBackend, args: dict) -> dict:
             "available": ["hipaa", "gdpr", "sox", "fedramp", "soc2", "pci_dss"],
         }
 
+    previous = _active_compliance_key if get_active_compliance() is not None else None
+    set_active_compliance(preset_name)
     summary = get_preset_summary(preset_name)
+
+    # The configuration change itself is audit-relevant: record it.
+    change_record = await store.record(
+        action_type=ActionType.DECISION,
+        actor_type=ActorType.SYSTEM,
+        actor_id="mcp-witness",
+        session_id=ADMIN_SESSION_ID,
+        tool_name="witness_configure_compliance",
+        input_data={"preset": preset_name, "previous_preset": previous},
+        reasoning="Compliance preset changed",
+    )
 
     return {
         "applied": preset_name,
+        "previous": previous,
+        "config_change_sequence": change_record.sequence,
+        "enforced": [
+            "auto_redact_fields are merged into redact_fields on every witness_record",
+            "retention_days defaults to the preset value when the caller omits it",
+            "witness_delete is refused while an immutable preset is active",
+        ],
+        "advisory": [
+            "anchor_frequency",
+            "requires_attestation",
+            "encryption (enable with MCP_WITNESS_ENCRYPTION_KEY)",
+            "recommended_audit_frequency",
+        ],
+        "scope": "process-local; resets on restart unless MCP_WITNESS_COMPLIANCE_PRESET is set",
         "preset": {
             "name": preset.name,
             "description": preset.description,
@@ -1173,8 +1268,8 @@ async def handle_compliance(store: StorageBackend, args: dict) -> dict:
             "Configure MCP_WITNESS_EXPORT_DIR for secure export paths",
             f"Review {preset.audit_frequency} audit schedule",
         ],
-        "note": "Preset configuration is advisory. Actual compliance requires organizational policies "
-        "and auditor review. This tool helps technical compliance — it doesn't replace legal review.",
+        "note": "Only the items under 'enforced' are applied by mcp-witness; the rest are "
+        "advisory. Actual compliance requires organizational policies and auditor review.",
     }
 
 
@@ -1280,9 +1375,16 @@ async def handle_delete(store: StorageBackend, args: dict) -> dict:
     if record_id and session_id:
         return {"error": "Provide record_id or session_id, not both"}
 
+    preset = get_active_compliance()
+    if preset is not None and preset.immutable:
+        return {
+            "error": f"Redaction refused: active compliance preset '{preset.name}' "
+            "requires immutable records"
+        }
+
     try:
-        # SqliteStorage has redact_record, PgStorage does not yet.
-        # Use duck typing with a fallback.
+        # SqliteStorage, PgStorage and BufferedStorage all implement
+        # redact_record; the guard is for third-party StorageBackends.
         redact_method = getattr(store, "redact_record", None)
         if redact_method is None:
             return {"error": "This storage backend does not support record redaction"}
@@ -1292,19 +1394,52 @@ async def handle_delete(store: StorageBackend, args: dict) -> dict:
             session_id=session_id,
             reason=reason,
         )
-
-        return {
-            "success": result["redacted_count"] > 0,
-            "action": result["action"],
-            "reason": result["reason"],
-            "redacted_count": result["redacted_count"],
-            "redacted_ids": result["redacted_ids"],
-            "note": result["note"],
-            "gdpr_notice": "This operation is logged for GDPR compliance. "
-            "Data fields are nulled; hash chain integrity is preserved.",
-        }
     except Exception as e:
         return sanitize_error(e)
+
+    response = {
+        "success": result["redacted_count"] > 0,
+        "action": result["action"],
+        "reason": result["reason"],
+        "redacted_count": result["redacted_count"],
+        "redacted_ids": result["redacted_ids"],
+        "note": result["note"],
+    }
+
+    # Append a chain record documenting the erasure. It contains only
+    # identifiers, the reason and the count — never the erased content — and
+    # lives in a separate admin session so it cannot be erased together with
+    # the target session.
+    try:
+        erasure = await store.record(
+            action_type=ActionType.TOOL_CALL,
+            actor_type=ActorType.SYSTEM,
+            actor_id="mcp-witness",
+            session_id=ADMIN_SESSION_ID,
+            tool_name="witness_delete",
+            input_data={
+                "target_record_id": str(record_id) if record_id else None,
+                "target_session_id": session_id,
+                "redacted_ids": [str(i) for i in result["redacted_ids"]],
+                "reason": reason,
+                "count": result["redacted_count"],
+            },
+            reasoning="GDPR erasure (redaction) performed",
+        )
+        response["erasure_record_id"] = str(erasure.id)
+        response["erasure_record_sequence"] = erasure.sequence
+        response["gdpr_notice"] = (
+            "The erasure is documented by a chain record "
+            f"(sequence {erasure.sequence}). Data fields are nulled; "
+            "hash chain integrity is preserved."
+        )
+    except Exception as e:
+        logger.error("Redaction succeeded but erasure record could not be written: %s", e)
+        response["erasure_record_error"] = sanitize_error(e)
+        response["gdpr_notice"] = (
+            "WARNING: redaction succeeded but the erasure record could not be written."
+        )
+    return response
 
 
 @_register("witness_metrics")

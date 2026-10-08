@@ -12,10 +12,11 @@ the write path from the storage backend's latency.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID
 
 from .models import (
@@ -72,10 +73,13 @@ class BufferedStorage(StorageBackend):
         Args:
             backend: The underlying StorageBackend to wrap
             batch_size: Maximum number of records per flush batch
-            flush_interval: Maximum seconds between flushes (latency guarentee)
+            flush_interval: Maximum seconds the flush loop waits for a new
+                            record before re-checking for shutdown
             max_queue_size: Maximum queue size (0 = unlimited).
                             If set and the queue is full, record() will block.
         """
+        if batch_size < 1:
+            raise ValueError("batch_size must be >= 1")
         self._backend = backend
         self._batch_size = batch_size
         self._flush_interval = flush_interval
@@ -86,6 +90,7 @@ class BufferedStorage(StorageBackend):
         )
         self._flush_task: Optional[asyncio.Task] = None
         self._running = False
+        self._stopping: Optional[asyncio.Event] = None
 
     @property
     def backend(self) -> StorageBackend:
@@ -99,6 +104,7 @@ class BufferedStorage(StorageBackend):
     async def connect(self) -> None:
         """Connect the underlying backend and start the flush task."""
         await self._backend.connect()
+        self._stopping = asyncio.Event()
         self._running = True
         self._flush_task = asyncio.create_task(self._flush_loop())
         logger.info(
@@ -108,18 +114,26 @@ class BufferedStorage(StorageBackend):
         )
 
     async def close(self) -> None:
-        """Flush remaining records and shut down the flush task."""
+        """Stop accepting records, flush everything queued, then close.
+
+        The flush task is never cancelled mid-write: it is signalled to stop,
+        drains the remaining queue, and exits on its own. Every enqueued
+        record is therefore either persisted or its caller gets an exception.
+        """
         self._running = False
+        if self._stopping is not None:
+            self._stopping.set()
 
         if self._flush_task is not None:
-            self._flush_task.cancel()
-            try:
-                await self._flush_task
-            except asyncio.CancelledError:
-                pass
+            task = self._flush_task
             self._flush_task = None
+            try:
+                await task
+            except Exception:  # pragma: no cover - loop handles its own errors
+                logger.exception("BufferedStorage flush task failed")
 
-        # Flush any remaining records synchronously
+        # Anything still queued (e.g. the task was never started or died)
+        # is flushed here so no caller is left waiting forever.
         await self._flush_now()
 
         await self._backend.close()
@@ -129,56 +143,96 @@ class BufferedStorage(StorageBackend):
     # Flush Loop
     # ------------------------------------------------------------------
 
-    async def _flush_loop(self) -> None:
-        """Background task: periodically flushes the queue."""
-        while self._running:
+    def _drain(self, limit: int, first: Optional[_BufferedRecord] = None) -> list[_BufferedRecord]:
+        """Pull up to ``limit`` items off the queue without blocking."""
+        batch: list[_BufferedRecord] = [first] if first is not None else []
+        while len(batch) < limit:
             try:
-                await asyncio.wait_for(
-                    self._flush_now(),
-                    timeout=self._flush_interval,
-                )
+                batch.append(self._queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        return batch
+
+    async def _flush_loop(self) -> None:
+        """Background task: block on the queue, then write batches.
+
+        The loop suspends on ``queue.get()`` (bounded by ``flush_interval``
+        so shutdown is noticed promptly); it never busy-spins. The DB write
+        itself is *not* wrapped in a timeout: cancelling a write mid-
+        transaction could lose records and leave callers' futures pending.
+        """
+        assert self._stopping is not None
+        while True:
+            if self._stopping.is_set() and self._queue.empty():
+                return
+            try:
+                first = await asyncio.wait_for(self._queue.get(), timeout=self._flush_interval)
             except asyncio.TimeoutError:
-                # Timeout means no records to flush within interval,
-                # which is expected when idle. Continue loop.
-                pass
-            except Exception:
-                logger.exception("Unexpected error in flush loop")
-                await asyncio.sleep(self._flush_interval)
+                continue
+            await self._write_batch(self._drain(self._batch_size, first))
 
     async def _flush_now(self) -> None:
-        """Drain the queue and write all pending records.
+        """Flush everything currently queued, in batches."""
+        while not self._queue.empty():
+            await self._write_batch(self._drain(self._batch_size))
 
-        Uses the underlying backend's ``batch_record()`` for efficient
-        batch insertion in a single transaction. Handles errors gracefully:
-        records that fail to write are logged and their futures are
-        completed with the exception, allowing callers to handle failures.
+    async def _write_batch(self, batch: list[_BufferedRecord]) -> None:
+        """Write one batch and resolve or fail every future in it.
+
+        Records are grouped by ``org_id`` (consecutive runs, preserving
+        order) because some backends take ``org_id`` per batch rather than
+        per record. Any exception fails every future in the affected group
+        and never escapes the flush loop.
         """
-        batch: list[_BufferedRecord] = []
-
-        # Drain the queue without blocking
-        try:
-            while len(batch) < self._batch_size:
-                item = self._queue.get_nowait()
-                batch.append(item)
-        except asyncio.QueueEmpty:
-            pass
-
         if not batch:
             return
-
         logger.debug("Flushing %d buffered records", len(batch))
 
-        # Collect all kwargs and batch-insert in one transaction
-        kwargs_list = [item.kwargs for item in batch]
+        groups: list[tuple[Optional[str], list[_BufferedRecord]]] = []
+        for item in batch:
+            org = item.kwargs.get("org_id")
+            if groups and groups[-1][0] == org:
+                groups[-1][1].append(item)
+            else:
+                groups.append((org, [item]))
+
+        for org, items in groups:
+            kwargs_list = [item.kwargs for item in items]
+            try:
+                if org is not None and self._batch_accepts_org_id():
+                    records = await self._backend.batch_record(  # type: ignore[call-arg]
+                        kwargs_list, org_id=org
+                    )
+                else:
+                    records = await self._backend.batch_record(kwargs_list)
+                if len(records) != len(items):
+                    raise RuntimeError(
+                        f"backend returned {len(records)} records for a batch of {len(items)}"
+                    )
+                for item, record in zip(items, records):
+                    if not item.future.done():
+                        item.future.set_result(record)
+            except Exception as e:
+                logger.error("Failed to flush buffered records: %s", e)
+                for item in items:
+                    if not item.future.done():
+                        item.future.set_exception(e)
+            except BaseException as e:
+                # Cancellation/interrupt: never leave callers hanging.
+                err = RuntimeError(f"buffered flush interrupted: {e!r}")
+                for item in items:
+                    if not item.future.done():
+                        item.future.set_exception(err)
+                raise
+
+    def _batch_accepts_org_id(self) -> bool:
         try:
-            records = await self._backend.batch_record(kwargs_list)
-            for item, record in zip(batch, records):
-                item.future.set_result(record)
-        except Exception as e:
-            logger.error("Failed to flush buffered records: %s", e)
-            for item in batch:
-                if not item.future.done():
-                    item.future.set_exception(e)
+            params = inspect.signature(self._backend.batch_record).parameters
+        except (TypeError, ValueError):  # pragma: no cover
+            return False
+        return "org_id" in params or any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
 
     # ------------------------------------------------------------------
     # Record (buffered)
@@ -199,12 +253,17 @@ class BufferedStorage(StorageBackend):
         sensitivity: Sensitivity = Sensitivity.INTERNAL,
         retention_days: int = 365,
         redact_fields: Optional[list[str]] = None,
+        org_id: Optional[str] = None,
+        **extra: Any,
     ) -> WitnessRecord:
-        """Enqueue a record and return immediately.
+        """Enqueue a record and wait until it has been flushed.
 
-        Returns a WitnessRecord resolved when the record is actually flushed
-        to the backend.
+        Extra keyword arguments (e.g. ``org_id``) are passed through to the
+        underlying backend. Raises ``RuntimeError`` if the buffer is not
+        running (not connected, or already closed).
         """
+        if not self._running:
+            raise RuntimeError("BufferedStorage is not running (call connect() first)")
         kwargs = dict(
             action_type=action_type,
             actor_type=actor_type,
@@ -220,6 +279,9 @@ class BufferedStorage(StorageBackend):
             retention_days=retention_days,
             redact_fields=redact_fields,
         )
+        if org_id is not None:
+            kwargs["org_id"] = org_id
+        kwargs.update({k: v for k, v in extra.items() if v is not None})
 
         loop = asyncio.get_running_loop()
         future = loop.create_future()
@@ -233,6 +295,19 @@ class BufferedStorage(StorageBackend):
     #
     # These delegate directly to the underlying backend without buffering.
     # ------------------------------------------------------------------
+
+    async def redact_record(self, *args: Any, **kwargs: Any) -> dict:
+        """GDPR redaction passthrough (flushes pending writes first)."""
+        await self._flush_now()
+        result: dict = await self._backend.redact_record(*args, **kwargs)  # type: ignore[attr-defined]
+        return result
+
+    async def search(self, *args: Any, **kwargs: Any) -> list[WitnessRecord]:
+        """Full-text search passthrough."""
+        result: list[WitnessRecord] = await self._backend.search(  # type: ignore[attr-defined]
+            *args, **kwargs
+        )
+        return result
 
     async def batch_record(
         self,
@@ -258,8 +333,10 @@ class BufferedStorage(StorageBackend):
         to_time: Optional[datetime] = None,
         limit: int = 100,
         offset: int = 0,
+        **kwargs: Any,
     ) -> list[WitnessRecord]:
-        return await self._backend.query(
+        return await self._backend.query(  # type: ignore[call-arg]
+            **kwargs,
             session_id=session_id,
             actor_id=actor_id,
             tool_name=tool_name,
