@@ -118,7 +118,7 @@
 
 **Enforced by:** `TSAProvider.verify()`, `OpenTimestampsProvider.verify()`, `IPFSProvider.verify()` in `anchoring.py`.
 
-**Current gap (CRITICAL):** `TSAProvider.anchor()` falls back to `local_attestation` when the TSA is unreachable. This local attestation is NOT an RFC 3161 timestamp — it's a locally-generated JSON blob. It silently degrades the trust guarantee from "legal-grade" to "self-asserted." Similarly, `OpenTimestampsProvider.verify()` is "structural-only" — it does NOT check the Bitcoin blockchain.
+**Current gap (CRITICAL):** `TSAProvider.anchor()` falls back to `local_attestation` when the TSA is unreachable. This local attestation is NOT an RFC 3161 timestamp — it's a locally-generated JSON blob. It degrades the trust guarantee from "third-party timestamp" to "self-asserted." Similarly, `OpenTimestampsProvider.verify()` is "structural-only" — it does NOT check the Bitcoin blockchain.
 
 ## 5. Specific Threat Scenarios
 
@@ -166,19 +166,25 @@
 
 ---
 
-## 6. Assurance Level Statement
+## 6. Trust Model and Assurance Statement
 
-**Current assurance level (v0.9.0): ASSURANCE-2 (Tamper-Evident) → targeting ASSURANCE-3 for v1.0**
+**Status: alpha.** No formal assurance level is claimed.
 
-- Cryptographic hash chain provides tamper evidence
-- Ed25519 signatures provide non-repudiation within a single key lifetime
-- Merkle checkpoints enable efficient verification
-- External anchoring is available but not guaranteed (silent fallback)
-
-**Target assurance level (v1.0): ASSURANCE-3 (Adversary-Resistant)**
-
-- All cryptographic guarantees hold against active adversaries
-- No silent degradation of trust guarantees
-- Key lifecycle management with rotation and revocation
-- Encrypted sensitive data at rest
-- Comprehensive monitoring and alerting
+- **Self-reporting.** The agent reports its own actions via `witness_record`;
+  mcp-witness does not intercept tool calls. The log is evidence of what was
+  *reported*, not of what happened.
+- **Operator-held keys.** The signing, HMAC and encryption keys are held by the
+  operator. The design detects after-the-fact tampering by parties *without*
+  those keys (e.g. database-file access only). It does not protect against a
+  misbehaving agent, a malicious operator, or a host compromise that exposes keys.
+- **Signatures** prove a record was produced by a holder of the server signing
+  key within that key's lifetime — not the identity of the agent or a human.
+- **RBAC.** `writer` is append-only (`witness_record`, `witness_attest`,
+  `witness_anchor`). `witness_delete`, `witness_configure_compliance` and
+  `witness_backfill` are admin-only; every erasure appends a chain record.
+- **`org_id`** is a per-record tag, not tenant isolation.
+- **Encryption at rest** is active only when `MCP_WITNESS_ENCRYPTION_KEY` is set.
+- **Dashboard.** The HTTP API is unauthenticated unless
+  `MCP_WITNESS_DASHBOARD_TOKEN` is set; bind it to loopback otherwise.
+- External anchoring may degrade (see Invariant 4); OpenTimestamps verification
+  is structural only.

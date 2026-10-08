@@ -4,47 +4,78 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![MCP](https://img.shields.io/badge/MCP-Compatible-purple.svg)](https://modelcontextprotocol.io)
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://pypi.org/project/mcp-witness/)
+[![Status: Alpha](https://img.shields.io/badge/status-alpha-orange.svg)](CHANGELOG.md)
 [![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-**Cryptographic proof of every AI decision.** An immutable, verifiable audit trail MCP server — because "trust me bro" isn't SOC2 compliant.
+**A tamper-evident log of agent-reported actions.** An MCP server that hash-chains,
+signs and (optionally) externally anchors the actions an AI agent reports to it, so
+that later edits to the log are detectable.
 
-```bash
-pip install mcp-witness
-mcp-witness quickstart
-```
+> [!WARNING]
+> **Do not `pip install mcp-witness`.** The `mcp-witness` name on PyPI belongs to an
+> unrelated project (a security toolkit by another author). That command installs
+> *different software*. Install this project from source:
+>
+> ```bash
+> pip install git+https://github.com/edwiniac/mcp-witness
+> mcp-witness quickstart
+> ```
+
+> **Status: alpha.** APIs, storage schema and defaults may still change.
+
+## 🧭 Trust model
+
+Read this before relying on mcp-witness for anything:
+
+- **The agent self-reports.** Records exist only because the agent (or its host)
+  calls `witness_record`. mcp-witness does not intercept tool calls or observe
+  what the agent actually did; an agent that omits or misdescribes an action
+  produces an accurate log of a false report.
+- **The operator holds the keys.** Signing, HMAC and encryption keys live with
+  whoever runs the server. Whoever holds them can rewrite and re-sign history;
+  external anchors (TSA/OTS/IPFS) only bound *when* a Merkle root existed.
+- **What it protects against:** after-the-fact modification, insertion,
+  reordering or deletion of records by parties who do *not* hold the keys
+  (e.g. someone with read/write access to the database file alone).
+- **What it does not protect against:** a misbehaving or compromised agent, a
+  malicious operator, or a host compromise that exposes the keys.
+- **Signatures** prove a record was produced by a holder of the server's signing
+  key — not by a particular agent or human. Any "non-repudiation" claim is in that
+  limited sense only.
+- **`org_id`** is a tag stored on each record (from the call or
+  `MCP_WITNESS_ORG_ID`). It is *not* access isolation: any caller with a read role
+  can read every org's records in the same database.
 
 ## ✨ Why mcp-witness?
 
-AI agents make decisions. Regulators ask questions. mcp-witness provides **cryptographic proof** of what happened, when, and why — with hash chain integrity, Merkle tree verification, Ed25519 signatures, external trust anchoring (RFC 3161 TSA strict mode with optional local attestation, OpenTimestamps for structural verification, IPFS), and compliance presets for HIPAA, GDPR, SOC2, and more.
+AI agents take actions; auditors ask what happened. mcp-witness keeps a
+tamper-evident record of what the agent *reported* — with a hash chain, Merkle
+checkpoints, Ed25519 signatures, optional external anchoring (RFC 3161 TSA,
+OpenTimestamps structural verification, IPFS) and compliance presets that enforce
+field redaction and default retention. It is a building block for compliance, not
+compliance by itself.
 
 | Feature | mcp-witness | Standard Logging |
 |---------|-------------|-----------------|
 | Tamper detection | ✅ SHA-256 hash chain + Merkle trees | ❌ Text files, easy to edit |
 | O(log n) verification | ✅ Merkle checkpoints with auto-backfill | ❌ Linear scan only |
-| Non-repudiation | ⚠️ Ed25519 record signing (requires persistent key) | ❌ None |
+| Origin signatures | ⚠️ Ed25519 signing by the server key (proves key holder, not agent identity) | ❌ None |
 | External anchoring | ✅ TSA, Bitcoin (OTS), IPFS | ❌ None |
-| Compliance presets | ✅ HIPAA, GDPR, SOX, PCI DSS, FedRAMP, SOC2 | ❌ Manual configuration |
-| PII/PHI redaction | ✅ Cryptographic hashing | ❌ Plaintext or manual |
+| Compliance presets | ⚠️ Enforce redaction field list + default retention; rest advisory | ❌ Manual configuration |
+| PII/PHI redaction | ✅ Named fields replaced by hashes before storage | ❌ Plaintext or manual |
 | GDPR right to erasure | ✅ `witness_delete` with chain preservation | ❌ Destructive deletion |
-| Legal-grade proof | ⚠️ RFC 3161 timestamps (strict mode default; local attestation in degraded mode) | ❌ None |
+| Trusted timestamps | ⚠️ RFC 3161 TSA (strict mode default; local attestation in degraded mode) | ❌ None |
 | Chain failure alerts | ✅ Webhook notifications | ❌ Silent failure |
-| Multi-tenancy | ✅ org_id isolation | ❌ None |
+| Org tagging | ⚠️ `org_id` tag per record (not access isolation) | ❌ None |
 | Reports | ✅ HTML + PDF compliance reports | ❌ Manual |
 | Dashboard | ✅ Web dashboard with live API | ❌ None |
 | Structured logging | ✅ JSON log format option | ❌ Unstructured |
 
-### 🔒 Assurance Levels
+### 🔒 Defaults
 
-| Level | Description | Current |
-|-------|-------------|---------|
-| ASSURANCE-1 | Best-effort logging, no cryptographic guarantees | — |
-| ASSURANCE-2 | Hash chain + Merkle trees, tamper-EVIDENT, configurable anchoring | ✓ |
-| ASSURANCE-3 | Non-repudiation (Ed25519), strict anchoring, encryption at rest, formal threat model | **v1.0.0** |
-
-As of **v1.0.0**, mcp-witness is **secure-by-default**: it refuses to start without a
-persistent signing key and fails closed if the chain does not verify at startup. Each
-default has an opt-out — see [docs/configuration.md](docs/configuration.md).
+mcp-witness refuses to start without a persistent signing key and fails closed if
+the chain does not verify at startup. Each default has an opt-out — see
+[docs/configuration.md](docs/configuration.md).
 
 ### ⚠️ Known Limitations
 
@@ -78,8 +109,8 @@ See the [full configuration reference](docs/configuration.md) and
 ## 🚀 30-Second Quickstart
 
 ```bash
-# Install
-pip install mcp-witness
+# Install (from source -- the PyPI name is a different project, see above)
+pip install git+https://github.com/edwiniac/mcp-witness
 
 # One command: init + serve
 mcp-witness quickstart
@@ -141,11 +172,11 @@ mcp-witness anchors create ID    Anchor to TSA/Bitcoin/IPFS
 mcp-witness anchors verify ID    Verify external anchor receipts
 ```
 
-## 🛠️ MCP Tools (17 Total)
+## 🛠️ MCP Tools (18 Total)
 
 | Tool | Description |
 |------|-------------|
-| `witness_record` | Log an AI action to the immutable audit trail |
+| `witness_record` | Append an agent-reported action to the tamper-evident log |
 | `witness_verify` | Verify hash chain integrity (detect tampering) |
 | `witness_verify_fast` | O(log n) verification using Merkle checkpoints |
 | `witness_query` | Search records by session, actor, tool, time |
@@ -154,30 +185,32 @@ mcp-witness anchors verify ID    Verify external anchor receipts
 | `witness_health` | Check DB connectivity, signing status, anchors, version |
 | `witness_attest` | RFC 3161 timestamp from external authority |
 | `witness_export` | Export records for compliance reporting |
-| `witness_delete` | GDPR right to erasure (data redaction, chain preserved) |
+| `witness_delete` | GDPR erasure: redacts data, chain preserved, appends an erasure record (admin only) |
 | `witness_search` | Full-text search across reasoning/input/output data |
 | `witness_checkpoints` | List Merkle checkpoints |
 | `witness_anchor` | Anchor checkpoint to TSA/Bitcoin/IPFS |
 | `witness_verify_anchors` | Verify external anchor receipts |
 | `witness_proof` | Get Merkle proof for a single record |
-| `witness_backfill` | Create checkpoints for existing records |
-| `witness_configure_compliance` | Apply HIPAA/GDPR/SOX/FedRAMP/SOC2/PCI DSS preset |
-| `witness_token` | Create an Ed25519-signed JWT for client authentication |
+| `witness_backfill` | Create checkpoints for existing records (admin only) |
+| `witness_configure_compliance` | Activate a HIPAA/GDPR/SOX/FedRAMP/SOC2/PCI DSS preset (admin only) |
+| `witness_metrics` | In-process operational metrics |
+
+Roles: **writer** = `witness_record`, `witness_attest`, `witness_anchor` (append-only);
+**auditor** = read tools; **admin** = everything, including `witness_delete`,
+`witness_configure_compliance` and `witness_backfill`.
 
 ## 🏛️ Compliance Presets
 
-One command. Full compliance baseline.
+A preset activated with `witness_configure_compliance` (or at startup with
+`MCP_WITNESS_COMPLIANCE_PRESET`) is **enforced** for: the auto-redact field list
+(merged into every `witness_record`), the default retention (when the caller omits
+`retention_days`), and refusing `witness_delete` for immutable presets. The change
+itself is written to the chain. Attestation, anchoring frequency, encryption and
+audit cadence are **advisory**. The active preset is process-local.
 
 ```python
-# Via MCP tool:
 witness_configure_compliance(preset="hipaa")
-# → 6-year retention, auto-redacts 12 PHI fields, requires attestation
-
-witness_configure_compliance(preset="gdpr")
-# → Right-to-erasure support, consent records, 12 PII fields redacted
-
-witness_configure_compliance(preset="soc2")
-# → 1-year retention, API key redaction, quarterly audit schedule
+# → PHI field names redacted on every record, 6-year default retention
 ```
 
 | Preset | Retention | Auto-Redact | Attestation | Immutable |
@@ -216,11 +249,12 @@ Merkle Tree:         root_hash
           R0:R0h  R1:R1h  R2:R2h  R3:R3h
 ```
 
-**Every record** is signed with Ed25519 for non-repudiation (signing key auto-generated if not configured).
+**Every record** is signed with the server's Ed25519 key (`MCP_WITNESS_SIGNING_KEY`;
+required by default). A signature shows the record came from a holder of that key.
 
-**Tamper Detection:** Change any record → its hash changes → signature invalid → Merkle root changes → checkpoint invalidated → external anchors prove when the real root existed.
+**Tamper Detection:** Change any record without the keys → its hash changes → signature invalid → Merkle root changes → checkpoint invalidated → external anchors show when the original root existed.
 
-**GDPR Right to Erasure:** `witness_delete` nulls data fields but preserves the hash chain — records can be redacted without breaking integrity verification.
+**GDPR Right to Erasure:** `witness_delete` (admin only) nulls data fields but preserves the hash chain, and appends an erasure record (ids, reason, count — no content) so the erasure itself is auditable.
 
 ### Verification Performance
 
@@ -237,16 +271,18 @@ Single record: **O(log n)** with Merkle proof (vs O(n) linear scan).
 
 - **SHA-256 hash chain** with null-byte delimiters to prevent collision attacks
 - **Ed25519 JWT assertions** — signed JSON Web Tokens as alternative to shared API keys
-- **Ed25519 record signing** — persistent signing key required by default for non-repudiation (`MCP_WITNESS_SIGNING_KEY`)
+- **Ed25519 record signing** — persistent server signing key required by default (`MCP_WITNESS_SIGNING_KEY`); proves origin from the key holder
 - **SSRF-guarded webhooks** — alert URLs are blocked from reaching internal/metadata addresses
 - **HMAC key protection** — optional server-side secret makes hashes un-recomputable
-- **RFC 3161 TSA anchoring** — legal-grade timestamps (strict mode; local attestation in degraded mode)
+- **RFC 3161 TSA anchoring** — third-party timestamps (strict mode; local attestation in degraded mode)
 - **OpenTimestamps** — structural verification (full Bitcoin confirmation requires external OTS client)
 - **IPFS content addressing** — CIDv0/CIDv1 computation with gateway verification
 - **Domain-separated Merkle trees** — prevents second-preimage attacks
 - **Atomic transactions** — `BEGIN IMMEDIATE` prevents race conditions and chain forks
 - **Rate limiting** — configurable token bucket (DB-backed)
-- **RBAC** — role-based access control for read-only audit deployments
+- **RBAC** — admin / auditor / writer; writers are append-only and cannot erase or reconfigure
+- **Encryption at rest (opt-in)** — AES-256-GCM field encryption only when `MCP_WITNESS_ENCRYPTION_KEY` is set; otherwise data is stored in plaintext
+- **Dashboard auth (opt-in)** — set `MCP_WITNESS_DASHBOARD_TOKEN` to require a bearer token on the API; a warning is logged when binding to a non-loopback address without one
 - **Error sanitization** — stack traces never leak to clients
 - **Path traversal protection** — exports confined to allowed directories
 - **Idempotency** — nonce-based replay attack prevention with per-row TTL cleanup
@@ -280,7 +316,7 @@ docker run -v witness-data:/data \
 git clone https://github.com/edwiniac/mcp-witness.git
 cd mcp-witness
 pip install -e ".[dev]"
-pytest -v                    # 343 unit tests
+pytest -v                    # unit tests
 pytest --ignore=tests/test_storage_pg.py  # Skip PG (needs PostgreSQL)
 ```
 
@@ -289,7 +325,7 @@ pytest --ignore=tests/test_storage_pg.py  # Skip PG (needs PostgreSQL)
 | Job | Description |
 |-----|-------------|
 | **lint** | ruff + black formatting checks |
-| **test** | 251 tests across Python 3.10, 3.11, 3.12 with ≥65% coverage |
+| **test** | Unit tests across Python 3.10, 3.11, 3.12 with coverage gate |
 | **test-postgres** | 12 PostgreSQL integration tests on Postgres 16 |
 | **security** | pip-audit vulnerability scanning |
 | **build** | Package build + smoke test |
@@ -300,18 +336,18 @@ pytest --ignore=tests/test_storage_pg.py  # Skip PG (needs PostgreSQL)
 - [x] Merkle checkpoints + external anchoring (v0.2.0)
 - [x] CLI + compliance presets + security hardening (v0.3.0)
 - [x] PostgreSQL backend (v0.5.0)
-- [x] Ed25519 record signing + non-repudiation (v0.6.0)
+- [x] Ed25519 record signing (v0.6.0)
 - [x] GDPR right to erasure + schema migrations (v0.6.0)
 - [x] Web dashboard with live API (v0.6.0)
 - [x] HTML + PDF compliance reports (v0.6.0)
 - [x] Structured JSON logging (v0.6.0)
-- [x] Multi-tenancy (v0.6.0)
+- [x] `org_id` record tagging (v0.6.0)
 - [x] Webhook alerts on chain failure (v0.6.0)
 - [x] Full-text search (v0.6.0)
 - [x] Adversarial hardening — TSA strict mode, canonical signing, crypto agility, key lifecycle (v0.9.0)
 - [x] Merkle proof strict validation + envelope encryption + metrics (v0.9.0)
 - [x] PostgreSQL full backend parity + sensitive data log scrubbing (v0.9.0)
-- [x] Secure-by-default hardening — required signing key, fail-closed startup, SSRF guard, ASSURANCE-3 (v1.0.0)
+- [x] Secure-by-default hardening — required signing key, fail-closed startup, SSRF guard (v1.0.0)
 - [ ] Streaming architecture (Kafka/NATS)
 - [ ] AWS KMS / cloud HSM signing
 - [ ] Grafana/Prometheus metrics endpoint

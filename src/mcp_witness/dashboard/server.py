@@ -3,8 +3,15 @@
 Dashboard HTTP server for mcp-witness.
 
 Serves the web dashboard (index.html) and JSON API endpoint.
+
+Security:
+  ``MCP_WITNESS_DASHBOARD_TOKEN`` — if set, every ``/api/`` request must carry
+  ``Authorization: Bearer <token>``. Without it the API is unauthenticated, so
+  bind to loopback only (the default); a warning is logged otherwise.
 """
 
+import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -20,14 +27,58 @@ DASHBOARD_DIR = Path(__file__).parent
 DASHBOARD_CORS_ORIGIN = os.getenv("MCP_WITNESS_DASHBOARD_ORIGIN", "").strip()
 
 
+def _dashboard_token() -> str:
+    """Read the dashboard bearer token at request time (empty = disabled)."""
+    return os.getenv("MCP_WITNESS_DASHBOARD_TOKEN", "").strip()
+
+
+def _is_loopback(host: str) -> bool:
+    """True if ``host`` is a loopback address ("" binds all interfaces)."""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+async def _recent_records(store, limit: int = 20) -> list:
+    """Return the ``limit`` most recent records, newest first.
+
+    Prefers ``query(order_desc=True)``; falls back to an offset query for
+    backends that don't support descending order yet.
+    """
+    try:
+        return list(await store.query(limit=limit, order_desc=True))
+    except TypeError:
+        stats = await store.get_stats()
+        offset = max(0, int(stats.total_records) - limit)
+        records = await store.query(limit=limit, offset=offset)
+        return sorted(records, key=lambda r: r.sequence, reverse=True)
+
+
 class DashboardHandler(SimpleHTTPRequestHandler):
     """HTTP handler that serves the dashboard and API."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(DASHBOARD_DIR), **kwargs)
 
+    def _authorized(self) -> bool:
+        token = _dashboard_token()
+        if not token:
+            return True
+        header = self.headers.get("Authorization", "")
+        scheme, _, supplied = header.partition(" ")
+        if scheme.lower() != "bearer" or not supplied:
+            return False
+        return hmac.compare_digest(supplied.strip().encode(), token.encode())
+
     def do_GET(self):
-        if self.path == "/api/dashboard":
+        path = self.path.split("?", 1)[0]
+        if path.startswith("/api/") and not self._authorized():
+            self._send_json({"error": "unauthorized"}, status=401)
+            return
+        if path == "/api/dashboard":
             self.handle_api()
         elif self.path == "/" or self.path == "":
             self.path = "/index.html"
@@ -67,6 +118,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         if DASHBOARD_CORS_ORIGIN:
             self.send_header("Access-Control-Allow-Origin", DASHBOARD_CORS_ORIGIN)
+        if status == 401:
+            self.send_header("WWW-Authenticate", 'Bearer realm="mcp-witness"')
         self.end_headers()
         self.wfile.write(body)
 
@@ -82,7 +135,7 @@ async def _load_dashboard(store) -> dict:
         stats = await store.get_stats()
         anchor_stats = await store.get_anchor_stats()
         checkpoints = await store.list_checkpoints(limit=5)
-        records = await store.query(limit=20)
+        records = await _recent_records(store, limit=20)
         verification = await store.verify_chain_fast()
 
         return {
@@ -137,6 +190,18 @@ def run_dashboard(host="127.0.0.1", port=None):
     """Start the dashboard HTTP server."""
     if port is None:
         port = DEFAULT_PORT
+
+    if not _is_loopback(host) and not _dashboard_token():
+        logger.warning(
+            "Dashboard is binding to non-loopback address %s WITHOUT authentication. "
+            "Anyone who can reach this port can read audit metadata. Set "
+            "MCP_WITNESS_DASHBOARD_TOKEN or bind to 127.0.0.1.",
+            host,
+        )
+        print(
+            f"WARNING: dashboard bound to {host} without MCP_WITNESS_DASHBOARD_TOKEN; "
+            "the API is unauthenticated."
+        )
 
     server = HTTPServer((host, port), DashboardHandler)
     print("📊 MCP Witness Dashboard")

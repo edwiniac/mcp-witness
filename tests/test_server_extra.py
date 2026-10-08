@@ -33,6 +33,16 @@ from mcp_witness.server import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _reset_compliance():
+    """Compliance presets are process-global; isolate each test."""
+    from mcp_witness import server as _server
+
+    _server.set_active_compliance(None)
+    yield
+    _server.set_active_compliance(None)
+
+
 def _fake_receipt(merkle_root="deadbeef"):
     """Build a deterministic AnchorReceipt for mocked anchoring."""
     from mcp_witness.anchoring import AnchorReceipt, AnchorType

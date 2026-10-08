@@ -5,7 +5,7 @@ Provides:
 - JWT assertion authentication (Ed25519-signed)
 - JWT token minting (create_jwt_token)
 - API key-based authentication (MCP_WITNESS_API_KEYS env var)
-- Three-role RBAC: admin, auditor, writer
+- Three-role RBAC: admin (all tools), auditor (read), writer (append-only)
 - Tool-level permission scoping
 - Deny-by-default when auth is unconfigured
 
@@ -69,18 +69,30 @@ _READ_TOOLS = frozenset(
     }
 )
 
+# Append-only tools: an agent with the WRITER role may add to the chain
+# (and attach attestations/anchors) but must never be able to erase, rewrite
+# or reconfigure it.
 _WRITE_TOOLS = frozenset(
     {
         "witness_record",
         "witness_attest",
         "witness_anchor",
-        "witness_backfill",
-        "witness_configure_compliance",
-        "witness_delete",
     }
 )
 
-ALL_TOOLS = _READ_TOOLS | _WRITE_TOOLS
+# Destructive / administrative tools. witness_delete redacts record content,
+# witness_configure_compliance changes what gets redacted, and
+# witness_backfill rewrites checkpoint state. These are ADMIN-only so that a
+# writer agent cannot cover its own tracks.
+_ADMIN_TOOLS = frozenset(
+    {
+        "witness_delete",
+        "witness_configure_compliance",
+        "witness_backfill",
+    }
+)
+
+ALL_TOOLS = _READ_TOOLS | _WRITE_TOOLS | _ADMIN_TOOLS
 
 ROLE_PERMISSIONS: dict[AuthRole, frozenset[str]] = {
     AuthRole.ADMIN: ALL_TOOLS,

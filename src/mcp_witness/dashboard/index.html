@@ -106,7 +106,7 @@
   </div>
 
   <footer>
-    MCP Witness · Cryptographic audit trails for AI · <span id="footer-stats"></span>
+    MCP Witness · Tamper-evident audit log for agent-reported actions · <span id="footer-stats"></span>
   </footer>
 </div>
 
@@ -114,12 +114,39 @@
 // Colors for chart bars
 const BAR_COLORS = ['#58a6ff','#3fb950','#d2991d','#f85149','#a371f7','#79c0ff','#56d364'];
 
+// HTML-escape every value interpolated into innerHTML. Record fields such as
+// tool_name / actor_id are attacker-controlled (the agent reports them).
+function esc(v) {
+  return String(v === null || v === undefined ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// Optional bearer token (MCP_WITNESS_DASHBOARD_TOKEN on the server). Open the
+// dashboard as /#token=<token> once; it is kept in sessionStorage.
+function dashboardToken() {
+  const m = /(?:^#|&)token=([^&]+)/.exec(location.hash);
+  if (m) {
+    const t = decodeURIComponent(m[1]);
+    try { sessionStorage.setItem('mcpWitnessToken', t); } catch (e) {}
+    history.replaceState(null, '', location.pathname + location.search);
+    return t;
+  }
+  try { return sessionStorage.getItem('mcpWitnessToken') || ''; } catch (e) { return ''; }
+}
+
 async function load() {
   try {
     // Try loading from API endpoint, fall back to demo data
     let data;
     try {
-      const resp = await fetch('/api/dashboard');
+      const token = dashboardToken();
+      const resp = await fetch('/api/dashboard',
+        token ? { headers: { 'Authorization': 'Bearer ' + token } } : {});
+      if (resp.status === 401) {
+        document.body.innerHTML = '<div class="container"><p style="color:var(--red)">Unauthorized: open this page as /#token=&lt;MCP_WITNESS_DASHBOARD_TOKEN&gt;</p></div>';
+        return;
+      }
       if (resp.ok) data = await resp.json();
     } catch (e) {}
     
@@ -145,7 +172,7 @@ async function load() {
     
     render(data);
   } catch (e) {
-    document.body.innerHTML = '<div class="container"><p style="color:var(--red)">Failed to load dashboard: ' + e.message + '</p></div>';
+    document.body.innerHTML = '<div class="container"><p style="color:var(--red)">Failed to load dashboard: ' + esc(e.message) + '</p></div>';
   }
 }
 
@@ -163,7 +190,7 @@ function render(d) {
     { label: 'Attested', value: d.attested_records.toLocaleString() },
     { label: 'Checkpoints', value: d.total_checkpoints.toLocaleString() },
     { label: 'Anchors', value: d.total_anchors.toLocaleString() },
-  ].map(m => `<div class="card"><div class="label">${m.label}</div><div class="value accent">${m.value}</div></div>`).join('');
+  ].map(m => `<div class="card"><div class="label">${esc(m.label)}</div><div class="value accent">${esc(m.value)}</div></div>`).join('');
 
   // Recent records table
   if (d.recent_records.length > 0) {
@@ -171,12 +198,12 @@ function render(d) {
       '<thead><tr><th>Seq</th><th>Type</th><th>Tool</th><th>Sensitivity</th><th>Hash</th><th>Time</th></tr></thead>' +
       '<tbody>' + d.recent_records.map(r =>
         `<tr>
-          <td>#${r.sequence}</td>
-          <td><span class="tag tag-${r.action_type}">${r.action_type}</span></td>
-          <td>${r.tool_name || '—'}</td>
-          <td><span class="tag tag-${r.sensitivity}">${r.sensitivity}</span></td>
-          <td class="hash">${r.record_hash}</td>
-          <td style="font-size:0.75rem;color:var(--text2);">${new Date(r.timestamp).toLocaleTimeString()}</td>
+          <td>#${esc(r.sequence)}</td>
+          <td><span class="tag tag-${esc(r.action_type)}">${esc(r.action_type)}</span></td>
+          <td>${r.tool_name ? esc(r.tool_name) : '—'}</td>
+          <td><span class="tag tag-${esc(r.sensitivity)}">${esc(r.sensitivity)}</span></td>
+          <td class="hash">${esc(r.record_hash)}</td>
+          <td style="font-size:0.75rem;color:var(--text2);">${esc(new Date(r.timestamp).toLocaleTimeString())}</td>
         </tr>`
       ).join('') + '</tbody></table>';
   } else {
@@ -188,11 +215,11 @@ function render(d) {
     document.getElementById('recent-checkpoints').innerHTML = d.recent_checkpoints.map(cp =>
       `<div class="checkpoint-card">
         <div class="checkpoint-header">
-          <strong>Checkpoint #${cp.id}</strong>
-          <span style="font-size:0.7rem;color:var(--text2);">${cp.record_count} records</span>
+          <strong>Checkpoint #${esc(cp.id)}</strong>
+          <span style="font-size:0.7rem;color:var(--text2);">${esc(cp.record_count)} records</span>
         </div>
-        <div class="hash">Root: ${cp.merkle_root}</div>
-        <div style="font-size:0.7rem;color:var(--text2);">Records ${cp.from_sequence}–${cp.to_sequence} · ${new Date(cp.created_at).toLocaleDateString()}</div>
+        <div class="hash">Root: ${esc(cp.merkle_root)}</div>
+        <div style="font-size:0.7rem;color:var(--text2);">Records ${esc(cp.from_sequence)}–${esc(cp.to_sequence)} · ${esc(new Date(cp.created_at).toLocaleDateString())}</div>
       </div>`
     ).join('');
   } else {
@@ -219,8 +246,8 @@ function renderBars(id, data) {
     .map(([k,v], i) => {
       const pct = total > 0 ? Math.round(v/total*100) : 0;
       return `<div class="bar-group">
-        <div class="bar-label"><span>${k}</span><span>${v} (${pct}%)</span></div>
-        <div class="bar-track"><div class="bar-fill" style="width:${Math.max(pct,2)}%;background:${BAR_COLORS[i%7]}"></div></div>
+        <div class="bar-label"><span>${esc(k)}</span><span>${esc(v)} (${esc(pct)}%)</span></div>
+        <div class="bar-track"><div class="bar-fill" style="width:${Number(Math.max(pct,2)) || 2}%;background:${BAR_COLORS[i%7]}"></div></div>
       </div>`;
     }).join('');
 }

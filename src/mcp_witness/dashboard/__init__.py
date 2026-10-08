@@ -27,8 +27,10 @@ def get_dashboard_data(db_path: str = "~/.mcp-witness/witness.db") -> dict:
             anchor_stats = await store.get_anchor_stats()
             checkpoints = await store.list_checkpoints(limit=5)
 
-            # Get recent records
-            records = await store.query(limit=20)
+            # Get recent records (newest first)
+            from .server import _recent_records
+
+            records = await _recent_records(store, limit=20)
 
             # Chain integrity
             verification = await store.verify_chain_fast()

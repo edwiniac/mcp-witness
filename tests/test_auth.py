@@ -234,6 +234,20 @@ class TestRBAC:
         with pytest.raises(PermissionError):
             authorize(AuthRole.WRITER, "witness_query")
 
+    @pytest.mark.parametrize(
+        "tool", ["witness_delete", "witness_configure_compliance", "witness_backfill"]
+    )
+    def test_writer_cannot_use_admin_tools(self, tool):
+        """An append-only writer must not be able to erase or reconfigure."""
+        with pytest.raises(PermissionError):
+            authorize(AuthRole.WRITER, tool)
+
+    @pytest.mark.parametrize(
+        "tool", ["witness_delete", "witness_configure_compliance", "witness_backfill"]
+    )
+    def test_admin_can_use_admin_tools(self, tool):
+        authorize(AuthRole.ADMIN, tool)
+
 
 class TestAPIKeys:
     """Tests for API key loading."""
